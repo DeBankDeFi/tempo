@@ -11778,9 +11778,11 @@ name = "tempo"
 version = "1.4.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-network",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rpc-types-eth",
+ "alloy-signer-local",
  "alloy-sol-types",
  "base64 0.22.1",
  "clap",
@@ -11824,6 +11826,8 @@ dependencies = [
  "tempo-eyre",
  "tempo-faucet",
  "tempo-node",
+ "tempo-precompiles",
+ "tempo-validator-config",
  "tokio",
  "tokio-util",
  "tracing",
@@ -12430,6 +12434,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-validator-config"
+version = "1.4.2"
+dependencies = [
+ "alloy-primitives",
+ "commonware-codec",
+ "commonware-cryptography",
+ "tempo-contracts",
+ "tempo-precompiles",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tempo-xtask"
 version = "1.4.0"
 dependencies = [
@@ -12461,6 +12477,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
+ "tempo-validator-config",
  "tokio",
 ]
 
