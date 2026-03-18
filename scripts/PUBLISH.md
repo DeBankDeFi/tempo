@@ -26,8 +26,7 @@ In `tempo-alloy`, reth-specific code lives in `rpc/compat.rs` (reth RPC trait im
 7. sanitize_toml.py resolve_deps ── replace workspace refs with versions
 8. post-resolve validation ── no workspace/path/git refs remain
 9. final cargo check + cargo check --all-features (on resolved manifests)
-10. cargo publish --dry-run (preflight all 3 crates)
-11. cargo publish (contracts → primitives → alloy, with retry)
+10. cargo publish (contracts → primitives → alloy, with retry; skips already-published crates)
 
 NOTE: the working tree is never modified — all mutations happen on temp copies.
 
@@ -47,7 +46,8 @@ Orchestrator. Copies the 3 crates to a temp directory, runs the sanitization pip
 - No `workspace = true`, `path =`, or `git =` in any published `Cargo.toml`
 
 **Publish behavior:**
-- Preflight: runs `cargo publish --dry-run` for all 3 crates before any real publish
+- Publishes in dependency order (contracts → primitives → alloy)
+- Skips already-published crates (detects "already exists" from crates.io)
 - Retry: 10 attempts × 15s backoff to handle crates.io indexing delays
 
 ### `sanitize_source.py`

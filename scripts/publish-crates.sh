@@ -184,14 +184,6 @@ fi
 log "Final build check passed ✓"
 
 # ── 9. Publish ─────────────────────────────────────────────────────────────────
-preflight_crate() {
-    local crate_dir="$1"
-    local name
-    name=$(grep -m1 'name = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
-    log "Preflight: cargo publish --dry-run -p $name"
-    cargo publish --manifest-path "$crate_dir/Cargo.toml" --dry-run --allow-dirty 2>&1
-}
-
 retry_publish() {
     local crate_dir="$1"
     local name
@@ -201,8 +193,15 @@ retry_publish() {
 
     for ((i = 1; i <= max_attempts; i++)); do
         log "Publishing $name (attempt $i/$max_attempts) …"
-        if cargo publish --manifest-path "$crate_dir/Cargo.toml" --allow-dirty 2>&1; then
+        local output
+        if output=$(cargo publish --manifest-path "$crate_dir/Cargo.toml" --allow-dirty 2>&1); then
             log "$name published ✓"
+            return 0
+        fi
+        echo "$output"
+        # Already published — treat as success
+        if echo "$output" | grep -qE 'already uploaded|already exists'; then
+            log "$name already published, skipping ✓"
             return 0
         fi
         if ((i < max_attempts)); then
@@ -219,13 +218,6 @@ CRATES=("$TMP_WORK_DIR/contracts" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/allo
 if $DRY_RUN; then
     log "Dry-run complete. Use --publish to actually publish."
 else
-    # Preflight all crates first to catch errors before any real publish
-    log "Running publish preflight for all crates …"
-    for crate_dir in "${CRATES[@]}"; do
-        preflight_crate "$crate_dir"
-    done
-    log "Preflight passed ✓"
-
     # Publish in dependency order. Each crate is published and indexed before
     # the next one starts, so inter-crate deps resolve from crates.io.
     for crate_dir in "${CRATES[@]}"; do
