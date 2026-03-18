@@ -1,5 +1,6 @@
 [package]
 name = "tempo-alloy"
+description = "Tempo extensions of Alloy"
 
 version.workspace = true
 edition.workspace = true

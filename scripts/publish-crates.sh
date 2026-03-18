@@ -226,6 +226,8 @@ else
     done
     log "Preflight passed ✓"
 
+    # Publish in dependency order. Each crate is published and indexed before
+    # the next one starts, so inter-crate deps resolve from crates.io.
     for crate_dir in "${CRATES[@]}"; do
         retry_publish "$crate_dir"
     done
