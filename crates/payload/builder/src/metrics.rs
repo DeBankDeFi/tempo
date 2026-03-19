@@ -75,6 +75,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// Whether the builder found a warm execution cache for the parent block (1 = hit, 0 = miss).
+    pub(crate) execution_cache_hit: Gauge,
 }
 
 impl TempoPayloadBuilderMetrics {

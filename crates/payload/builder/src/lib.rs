@@ -19,7 +19,7 @@ use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::{
     cached_state::{CachedStateMetrics, CachedStateProvider, ExecutionCache},
     instrumented_state::InstrumentedStateProvider,
-    precompile_cache::{CachedPrecompile, PrecompileCacheMap},
+    precompile_cache::{CachedPrecompile, CachedPrecompileMetrics, PrecompileCacheMap},
     PayloadExecutionCache, SharedPreservedSparseTrie,
 };
 use reth_errors::{ConsensusError, ProviderError};
@@ -43,6 +43,7 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 use std::{
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -102,7 +103,10 @@ pub struct TempoPayloadBuilder<Provider> {
     execution_cache: PayloadExecutionCache,
     /// Engine precompile cache map (Arc-backed, cheap to clone).
     precompile_cache_map: PrecompileCacheMap<TempoHardfork>,
-    /// Engine sparse trie (Arc-backed, cheap to clone).
+    /// Per-address precompile cache metrics (lazily initialized, behind Mutex for &self access).
+    precompile_cache_metrics: Arc<parking_lot::Mutex<HashMap<Address, CachedPrecompileMetrics>>>,
+    /// Engine sparse trie (Arc-backed, cheap to clone). Held to preserve allocation across blocks.
+    #[allow(dead_code)]
     sparse_trie: SharedPreservedSparseTrie,
 }
 
@@ -127,6 +131,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             disable_state_cache,
             execution_cache,
             precompile_cache_map,
+            precompile_cache_metrics: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             sparse_trie,
         }
     }
@@ -272,10 +277,12 @@ where
         // Use engine execution cache if available for the parent block
         let (caches, cache_metrics) =
             if let Some(saved) = self.execution_cache.get_cache_for(parent_header.hash()) {
-                debug!("using engine execution cache for parent");
+                info!(parent_hash = ?parent_header.hash(), "builder using warm engine execution cache");
+                self.metrics.execution_cache_hit.set(1.0);
                 (saved.cache().clone(), saved.metrics().clone())
             } else {
-                debug!("no engine execution cache available, using fresh cache");
+                info!(parent_hash = ?parent_header.hash(), "builder cache miss, using fresh cache");
+                self.metrics.execution_cache_hit.set(0.0);
                 (
                     ExecutionCache::new(DEFAULT_CACHE_SIZE),
                     CachedStateMetrics::zeroed(),
@@ -387,16 +394,22 @@ where
             .builder_for_next_block(&mut db, &parent_header, next_block_attrs)
             .map_err(PayloadBuilderError::other)?;
 
-        // Wrap precompiles with caching
+        // Wrap precompiles with caching (metrics pattern matches engine validator)
+        let precompile_metrics = &self.precompile_cache_metrics;
         builder
             .evm_mut()
             .precompiles_mut()
             .map_precompiles(|address, precompile| {
+                let metrics = precompile_metrics
+                    .lock()
+                    .entry(*address)
+                    .or_insert_with(|| CachedPrecompileMetrics::new_with_address(*address))
+                    .clone();
                 CachedPrecompile::wrap(
                     precompile,
                     self.precompile_cache_map.cache_for_address(*address),
                     spec_id,
-                    None,
+                    Some(metrics),
                 )
             });
 
@@ -644,8 +657,7 @@ where
             .total_transaction_execution_duration_seconds
             .record(total_transaction_execution_elapsed);
 
-        // Phase 2 stub: take the preserved sparse trie (not yet used for state root)
-        let _preserved = self.sparse_trie.take();
+        // Phase 2: sparse trie is shared with engine but not yet used for state root computation.
 
         let builder_finish_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();

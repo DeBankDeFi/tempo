@@ -40,4 +40,5 @@ alloy-rlp.workspace = true
 
 either.workspace = true
 metrics.workspace = true
+parking_lot.workspace = true
 tracing.workspace = true
