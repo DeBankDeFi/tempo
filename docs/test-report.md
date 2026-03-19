@@ -3,9 +3,9 @@
 ## 测试环境
 
 - 机器: `blockchain-misc-x3` (x86_64, Ubuntu 20.04)
-- 镜像: `blockchain/kava-x:amd64-f86ef2b` (tempo v1.4.2)
+- 镜像: `blockchain/kava-x:amd64-6553257` (tempo v1.4.3)
 - 网络: Tempo 主网 (chain ID 4217)
-- 对照: 官方 RPC `https://rpc.tempo.xyz` (tempo v1.4.3)
+- 对照: 官方 RPC `https://rpc.tempo.xyz` (tempo v1.4.3, 同版本)
 - 浏览器: `https://explore.tempo.xyz`
 - 日期: 2026-03-19
 
@@ -75,7 +75,7 @@
 
 ---
 
-## 3. trace_transaction (debug_traceTransaction)
+## 3. trace_transaction
 
 | # | 测试项 | 结果 | 详情 |
 |---|--------|------|------|
@@ -97,38 +97,11 @@
 |---|--------|------|------|
 | 4.1 | eth_call 一致性 | **一致** | 同一区块同一请求, 返回值完全相同 |
 | 4.2 | 区块数据一致性 | **一致** | hash/stateRoot/transactionsRoot/receiptsRoot/gasUsed 全部一致 |
-| 4.3 | trace_transaction 单笔对比 | **一致** | ERC-20 transfer tx, trace 结果完全相同 |
-| 4.4 | trace_transaction 批量对比 (10 区块, 22 笔 tx) | **18 一致 / 4 不一致** | 见下方异常分析 |
+| 4.3 | trace_transaction 单笔对比 | **一致** | 含普通 tx 和 AA tx (type=0x76), 与官方 RPC 完全相同 |
+| 4.4 | trace_transaction 批量对比 (10 区块, 34 笔 tx) | **34/34 一致** | 所有 tx 的 trace 结果与官方 RPC 完全一致 |
 | 4.5 | pre_traceMany vs trace_transaction 对比 | **一致** | 用链上 tx 参数 + 同一 block + tx 真实 gas_limit 调用 pre_traceMany, 对比 trace_transaction: 所有字段完全一致 (type/callType/from/to/value/gas/gasUsed/output/traceAddress/subtraces) |
 
 ---
-
-## 异常分析
-
-### 异常 1: trace_transaction from 字段差异 (4/22 笔)
-
-**现象**: 4 笔 type=0x76 (AA) tx 在 `debug_traceTransaction` 中, 本地返回真实 from 地址, 官方返回 `0x000...000`
-
-**涉及交易**:
-
-| tx hash | 区块 | 本地 from | 官方 from |
-|---------|------|-----------|-----------|
-| `0x34048a8b4ecaf3dbbff876df8fa0cced1dcaa5c517ef0faed3f43bdb42ac18ba` | 0x9b2006 | `0x6b3646b0...` | `0x000...000` |
-| `0x2314981f2b79cf84794bc250350972202d80d1c59de23c496f2b15d136b79642` | 0x9b200b | `0x714ab6a7...` | `0x000...000` |
-| `0xefd87f37bec7330252608154c0f2015f28f881792e56bf14ac7e42123a6ee681` | 0x9b200d | `0x6b3646b0...` | `0x000...000` |
-| `0x7851dd660de7f58bfc0f089c699587e1def11706ab4cc7cebf0e8783832d30d1` | 0x9b2014 | `0x6b3646b0...` | `0x000...000` |
-
-**结论: 我们的结果是正确的**
-- `eth_getBlockByNumber`: 本地和官方都返回 `from: 0x6b3646b0...`
-- Tempo 官方浏览器 (explore.tempo.xyz): 显示 `from: 0x6b3646b0...`
-- 三者一致, 官方 `debug_traceTransaction` 返回零地址是官方 RPC 侧的 bug
-- 差异仅出现在 reth 自带的 `debug_traceTransaction`, **不影响 DeBank 自定义 RPC**
-
-### ~~异常 2: pre_traceMany gas 不足时返回 code=1000~~ (已澄清)
-
-**原现象**: 给极低 gas (0x10), 返回 code=1000 而非 1001
-
-**澄清**: gas 低于 intrinsic cost 时在 reth `inspect()` 层报错返回 code=1000, 这是正确行为 (请求根本未进入 EVM)。当 gas 够 intrinsic 但 EVM 执行中耗尽时, 正确返回 code=1001 `halt: Ethereum(OutOfGas(Basic))`。两种错误码对应不同阶段的 gas 不足, 均符合预期。Tempo intrinsic gas 较高 (~271000), 因此测试时需注意给够 intrinsic gas
 
 ---
 
@@ -183,6 +156,5 @@ AA tx (type=0x76) 的完整 AA 执行路径（多 calls 批量、fee payer、签
 ## 总结
 
 - **DeBank 自定义 RPC 全部功能正常**: eth_multiCall 和 pre_traceMany 均按预期工作
-- **与官方 RPC 数据一致性良好**: eth_call 和区块数据完全一致
-- **trace 差异属于官方 bug**: 4 笔 type=0x76 tx 的 trace from 字段, 我们返回正确地址, 官方返回零地址
-- **节点同步正常**: snapshot 导入成功, follow 模式跟随链头, peers=9
+- **与官方 RPC 数据完全一致**: eth_call、区块数据、trace_transaction (34 笔 tx) 全部一致, 无异常
+- **节点同步正常**: snapshot 导入成功, follow 模式跟随链头
