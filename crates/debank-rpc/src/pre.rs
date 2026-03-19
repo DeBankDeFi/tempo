@@ -6,7 +6,7 @@ use jsonrpsee::core::RpcResult;
 use reth_evm::EvmEnvFor;
 use reth_rpc_convert::RpcTxReq;
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcNodeCore,
+    EthApiTypes,
     helpers::{EthTransactions, TraceExt},
 };
 use reth_rpc_eth_types::{EthApiError, StateCacheDb};
@@ -28,13 +28,6 @@ impl<Eth> PreApi<Eth> {
     }
 }
 
-impl<Eth: RpcNodeCore> PreApi<Eth> {
-    /// Access the underlying provider.
-    #[allow(dead_code)]
-    pub fn provider(&self) -> &Eth::Provider {
-        self.eth_api.provider()
-    }
-}
 
 impl<Eth> PreApi<Eth>
 where
@@ -47,6 +40,7 @@ where
         tx_env: reth_evm::TxEnvFor<Eth::Evm>,
         db: &mut StateCacheDb,
         tx_info: TransactionInfo,
+        block_timestamp: u64,
     ) -> PreResult {
         let result: Result<PreResult, PreError> = (|| {
             let mut inspector = TracingInspector::new(TracingInspectorConfig::default_parity());
@@ -76,7 +70,7 @@ where
                             inner: log,
                             block_hash: tx_info.block_hash,
                             block_number: tx_info.block_number,
-                            block_timestamp: None,
+                            block_timestamp: Some(block_timestamp),
                             transaction_hash: tx_info.hash,
                             transaction_index: tx_info.index,
                             log_index: Some(i as u64),
@@ -91,9 +85,9 @@ where
                         gas_used: gas.used(),
                     })
                 }
-                revm::context::result::ExecutionResult::Halt { .. } => Err(PreError {
-                    code: PreErrorCode::InsufficientBalane as i64,
-                    msg: "halt".to_string(),
+                revm::context::result::ExecutionResult::Halt { reason, .. } => Err(PreError {
+                    code: PreErrorCode::InsufficientBalance as i64,
+                    msg: format!("halt: {reason:?}"),
                 }),
                 revm::context::result::ExecutionResult::Revert { .. } => Err(PreError {
                     code: PreErrorCode::Reverted as i64,
@@ -124,12 +118,14 @@ where
             self.eth_api.recovered_block(target_block),
         )?;
         let block = block.ok_or(EthApiError::HeaderNotFound(target_block))?;
-        let block_hash = block.hash();
         let block_number: u64 = block.number();
+        let block_timestamp: u64 = block.timestamp();
+        let parent_hash = block.parent_hash();
+        let base_fee = block.base_fee_per_gas();
 
-        let this = self.clone();
         self.eth_api
-            .spawn_with_state_at_block(BlockId::hash(block.parent_hash()), move |_this, mut db| {
+            .spawn_with_state_at_block(BlockId::hash(parent_hash), move |eth_api, mut db| {
+                let this = PreApi::new(eth_api);
                 let mut results: Vec<PreResult> = Vec::with_capacity(transactions.len());
 
                 for (tx_index, tx) in transactions.into_iter().enumerate() {
@@ -142,13 +138,13 @@ where
                     let tx_info = TransactionInfo {
                         hash: Some(B256::random()),
                         index: Some(tx_index as u64),
-                        block_hash: Some(block_hash),
+                        block_hash: Some(parent_hash),
                         block_number: Some(block_number),
-                        base_fee: None,
+                        base_fee,
                     };
 
                     let res =
-                        this.trace_transaction(current_evm_env, tx_env, &mut db, tx_info);
+                        this.trace_transaction(current_evm_env, tx_env, &mut db, tx_info, block_timestamp);
                     results.push(res);
                 }
 

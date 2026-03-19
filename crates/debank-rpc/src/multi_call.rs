@@ -62,22 +62,24 @@ where
             cache_enabled: !disable_cache,
         };
 
-        let this = self.clone();
         self.eth_api
-            .spawn_with_state_at_block(target_block, move |_this, mut db| {
+            .spawn_with_state_at_block(target_block, move |eth_api, mut db| {
                 let mut result_response: Vec<SingleCallResult> = Vec::with_capacity(requests.len());
 
                 for request in requests {
                     let start = std::time::Instant::now();
 
-                    // Fast-fail: if previous call failed, duplicate the last error
+                    // Fast-fail: if previous call failed, skip with dedicated error code
                     if fast_fail
                         && !result_response.is_empty()
                         && result_response.last().unwrap().code
                             != MultiCallErrorCode::Success as i32
                     {
-                        let res = result_response.last().unwrap().clone();
-                        result_response.push(res);
+                        result_response.push(SingleCallResult {
+                            code: MultiCallErrorCode::EVMFastFailed as i32,
+                            err: "skipped due to fast_fail".to_string(),
+                            ..Default::default()
+                        });
                         continue;
                     }
 
@@ -98,12 +100,11 @@ where
                     // Regular EVM call
                     let overrides =
                         EvmOverrides::new(state_overrides.take(), block_overrides.clone());
-                    let (current_evm_env, prepared_tx) = this
-                        .eth_api
-                        .prepare_call_env(evm_env.clone(), request, &mut db, overrides)?;
+                    let (current_evm_env, prepared_tx) =
+                        eth_api.prepare_call_env(evm_env.clone(), request, &mut db, overrides)?;
 
                     let execute_result =
-                        this.eth_api.transact(&mut db, current_evm_env, prepared_tx)?;
+                        eth_api.transact(&mut db, current_evm_env, prepared_tx)?;
 
                     let mut res = match execute_result.result {
                         ExecutionResult::Success {

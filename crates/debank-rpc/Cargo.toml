@@ -39,3 +39,6 @@ serde = { workspace = true }
 # Misc
 async-trait = { workspace = true }
 futures = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
