@@ -3316,6 +3316,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "debank-rpc"
+version = "1.4.2"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "alloy-rpc-types-trace",
+ "alloy-sol-types",
+ "async-trait",
+ "futures",
+ "jsonrpsee",
+ "reth-evm",
+ "reth-provider",
+ "reth-rpc-convert",
+ "reth-rpc-eth-api",
+ "reth-rpc-eth-types",
+ "revm",
+ "revm-inspectors",
+ "serde",
+]
+
+[[package]]
 name = "debug-helper"
 version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12159,6 +12182,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "commonware-runtime",
+ "debank-rpc",
  "eyre",
  "futures",
  "indexmap 2.13.0",

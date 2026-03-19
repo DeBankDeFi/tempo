@@ -6,6 +6,9 @@ use crate::{
         TempoToken, TempoTokenApiServer,
     },
 };
+use debank_rpc::{
+    DebankEthExtApiServer, DebankPreApiServer, DebankEthExt, PreApi,
+};
 use alloy_primitives::B256;
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_evm::revm::primitives::Address;
@@ -206,13 +209,23 @@ where
 
                 let eth_api = registry.eth_api().clone();
                 let token = TempoToken::new(eth_api.clone());
-                let eth_ext = TempoEthExt::new(eth_api);
+                let eth_ext = TempoEthExt::new(eth_api.clone());
                 let admin = TempoAdminApi::new(self.validator_key);
 
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
+
+                // DeBank custom RPCs
+                let pre_api = PreApi::new(eth_api.clone());
+                modules.merge_configured(pre_api.into_rpc())?;
+
+                let debank_eth_ext = DebankEthExt::new(eth_api);
+                modules.merge_if_module_configured(
+                    RethRpcModule::Eth,
+                    debank_eth_ext.into_rpc(),
+                )?;
 
                 Ok(())
             })

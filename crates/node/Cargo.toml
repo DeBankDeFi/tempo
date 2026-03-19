@@ -11,6 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+debank-rpc.workspace = true
 tempo-alloy = { workspace = true, features = ["tempo-compat"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
