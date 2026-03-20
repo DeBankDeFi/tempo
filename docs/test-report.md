@@ -88,6 +88,7 @@
 | 3.7 | create 类型 trace | PASS | tx `0x62dd2453...` (block 0x99b150), 内部 CREATE: type="create", createdAddr=0x28fc...f816, gasUsed=0xc07e18, init 含完整 bytecode |
 | 3.8 | native value transfer (value>0) | **不适用** | Tempo 无 native gas token, 链上所有 trace 的 action.value 均为 0x0 |
 | 3.9 | transactionPosition 正确性 | PASS | block 0x9a1eb0 含 4 笔 tx, transactionPosition 0→1→2→3 与 eth_getBlockByNumber 返回的 tx 顺序完全一致 |
+| 3.10 | 早期区块 trace | PASS | block 1/2/3/10/100/1000/10000 的 tx trace 均正常返回, 与官方 RPC 7/7 一致 |
 
 ---
 
@@ -97,8 +98,13 @@
 |---|--------|------|------|
 | 4.1 | eth_call 一致性 | **一致** | 同一区块同一请求, 返回值完全相同 |
 | 4.2 | 区块数据一致性 | **一致** | hash/stateRoot/transactionsRoot/receiptsRoot/gasUsed 全部一致 |
+| 4.7 | eth_chainId | **一致** | 本地和官方均返回 0x1079 (4217) |
+| 4.8 | eth_getBalance | **一致** | latest 和历史区块余额均一致 |
+| 4.9 | eth_estimateGas | **一致** | 同一 tx 参数估算结果一致 (含 revert 场景) |
+| 4.10 | eth_getTransactionReceipt | **一致** | status/gasUsed/blockHash/logs/cumulativeGasUsed/logsBloom 全部一致 |
 | 4.3 | trace_transaction 单笔对比 | **一致** | 含普通 tx 和 AA tx (type=0x76), 与官方 RPC 完全相同 |
 | 4.4 | trace_transaction 批量对比 (10 区块, 34 笔 tx) | **34/34 一致** | 所有 tx 的 trace 结果与官方 RPC 完全一致 |
+| 4.6 | trace_transaction 早期区块对比 (block 1~10000) | **7/7 一致** | 早期区块 tx trace 与官方 RPC 完全一致 |
 | 4.5 | pre_traceMany vs trace_transaction 对比 | **一致** | 用链上 tx 参数 + 同一 block + tx 真实 gas_limit 调用 pre_traceMany, 对比 trace_transaction: 所有字段完全一致 (type/callType/from/to/value/gas/gasUsed/output/traceAddress/subtraces) |
 
 ---
