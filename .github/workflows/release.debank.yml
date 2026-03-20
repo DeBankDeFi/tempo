@@ -1,10 +1,9 @@
-name: "Build DeBank artifacts"
+name: "Release DeBank artifacts"
 
 on:
-  pull_request:
-    branches:
-      - "debank"
-
+  release:
+    types:
+      - created
   workflow_dispatch:
 
 env:
@@ -23,16 +22,10 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Set env (determine image tag)
+      - name: Set env
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "REVISION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
-          else
-            echo "REVISION=$(git rev-parse --short=7 HEAD)" >> $GITHUB_ENV
-          fi
+          echo "REVISION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v1
@@ -52,23 +45,16 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ matrix.arch }}-${{ env.REVISION }}
           provenance: false
 
-
   merge-docker-manifest:
     runs-on: [ self-hosted, general ]
     needs: build-artifacts
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Set env (determine image tag)
+      - name: Set env
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "REVISION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
-          else
-            echo "REVISION=$(git rev-parse --short=7 HEAD)" >> $GITHUB_ENV
-          fi
+          echo "REVISION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v1
@@ -90,4 +76,4 @@ jobs:
       - name: Lark Notification
         continue-on-error: true
         run: |
-          notiv3 "Blockchain tempo pushed" ${REGISTRY}/${IMAGE}:${REVISION}
+          notiv3 "Blockchain tempo released" ${REGISTRY}/${IMAGE}:${REVISION}
