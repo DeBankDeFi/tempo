@@ -106,6 +106,7 @@
 | 4.4 | trace_transaction 批量对比 (10 区块, 34 笔 tx) | **34/34 一致** | 所有 tx 的 trace 结果与官方 RPC 完全一致 |
 | 4.6 | trace_transaction 早期区块对比 (block 1~10000) | **7/7 一致** | 早期区块 tx trace 与官方 RPC 完全一致 |
 | 4.5 | pre_traceMany vs trace_transaction 对比 | **一致** | 用链上 tx 参数 + 同一 block + tx 真实 gas_limit 调用 pre_traceMany, 对比 trace_transaction: 所有字段完全一致 (type/callType/from/to/value/gas/gasUsed/output/traceAddress/subtraces) |
+| 4.11 | pre_traceMany vs receipt+trace 综合对比 | **见下方** | gasUsed 和 traces 完全一致; logs 少 1 条 (fee log), 已有的 2 条 log 内容完全一致 |
 
 ---
 
@@ -151,7 +152,35 @@
 
 ### stateDiff 字段
 
-API spec 中 pre_traceMany 返回值包含 `stateDiff` 字段, 但经确认: debankdefi/reth 未实现该字段, Go 节点虽返回但 DeBankCore 业务侧从未消费 (`chain/service.py` 只取 trace/logs/gasUsed/error)。`stateDiff` 属于世界状态层面的变更, 应由 `trace_debankBlock` / ETL 管道负责, 不属于预执行追踪的职责范围, 无需补充。
+API spec 中 pre_traceMany 返回值包含 `stateDiff` 字段, 但 DeBankCore 业务侧从未消费 (`chain/service.py` 只取 trace/logs/gasUsed/error)。所以暂时不实现。
+
+### pre_traceMany 缺少 TIP20 fee 相关 log
+
+pre_traceMany 与 receipt 对比: gasUsed、traces、用户 logs 完全一致, 但缺少 Tempo handler 产生的 fee log (普通 tx 少 1 条, AA tx 少 2~3 条, 均为 TIP-20 地址)。
+
+**根因**: Tempo gas fee 不在 EVM (revm) 内扣除, 而是在 EVM 外的 Tempo handler 层通过系统调用 (`transfer_fee_post_tx`) 完成。pre_traceMany 只执行 EVM 内部逻辑, 不经过 handler 的 fee 结算, 因此缺少 fee log。
+
+可行改造方案**: EVM 执行后, 根据 gasUsed + basefee 计算 fee, 读链上 fee token 偏好, 追加 Transfer log。仅覆盖普通 tx, AA tx 暂不支持。需 DeBankCore 配合设置 Tempo 的 gasPrice (当前硬编码为 0x0)。
+
+**详细说明**: Tempo 的交易执行分三个阶段:
+
+```
+1. handler.validate_against_state_and_deduct_caller()     ← EVM 外
+   → transfer_fee_pre_tx(): 从用户 TIP-20 余额预扣 max fee, 不发 log
+
+2. handler.execution()                                     ← EVM 内 (revm)
+   → 执行用户合约逻辑, 产生用户 logs 和 traces
+
+3. handler.reimburse_caller()                              ← EVM 外
+   → transfer_fee_post_tx(): 计算实际 fee, 退还多余部分,
+     发一条 Transfer(用户 → FeeManager, amount=实际fee) log
+```
+
+pre_traceMany 走 `prepare_call_env` → `inspect()` 路径, 设置了 `disable_base_fee=true`, 只执行阶段 2。阶段 1 和 3 被跳过, 所以 receipt 中由阶段 3 产生的 fee Transfer log 不会出现在 pre_traceMany 的结果中。
+
+对于 AA tx (type=0x76), 阶段 1/3 还涉及 fee payer 代付、不同 fee token 之间的 AMM 兑换等系统操作, 会产生额外的 TIP-20 log, 因此 AA tx 缺失的 log 更多 (2~3 条)。
+
+
 
 ### AA tx 限制
 
