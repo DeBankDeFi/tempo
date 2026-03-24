@@ -146,6 +146,10 @@ where
             });
         }
 
+        // Receipt statuses per tx — used to correct trace classification
+        // (CallTraceArena may report success=false for AA tx wrapper even when tx succeeds)
+        let tx_statuses: Vec<bool> = receipts.iter().map(|r| r.status()).collect();
+
         let parent_hash = block.parent_hash();
         let parent_block = self.eth_api.recovered_block(parent_hash.into()).await?;
         let Some(parent_block) = parent_block else {
@@ -284,12 +288,28 @@ where
             })
             .await?;
 
-        // Assemble block file
-        for (trace, error_trace, event, error_event, _) in traces_result {
-            block_file.traces.extend(trace);
-            block_file.error_traces.extend(error_trace);
-            block_file.events.extend(event);
-            block_file.error_events.extend(error_event);
+        // Assemble block file.
+        // Use receipt status as the authoritative success indicator.
+        // CallTraceArena may report success=false for AA tx wrappers even when
+        // the tx actually succeeds (receipt status=0x1). In that case, merge
+        // error_traces/error_events back into traces/events.
+        for (idx, (mut trace, mut error_trace, mut event, mut error_event, _)) in
+            traces_result.into_iter().enumerate()
+        {
+            let tx_success = tx_statuses.get(idx).copied().unwrap_or(true);
+            if tx_success {
+                // Tx succeeded: all traces/events go to success lists
+                trace.extend(error_trace);
+                event.extend(error_event);
+                block_file.traces.extend(trace);
+                block_file.events.extend(event);
+            } else {
+                // Tx failed: all traces/events go to error lists
+                error_trace.extend(trace);
+                error_event.extend(event);
+                block_file.error_traces.extend(error_trace);
+                block_file.error_events.extend(error_event);
+            }
         }
 
         let mut state_diff = state_diff;
