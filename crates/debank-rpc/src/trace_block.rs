@@ -146,9 +146,47 @@ where
             });
         }
 
-        // Receipt statuses per tx — used to correct trace classification
-        // (CallTraceArena may report success=false for AA tx wrapper even when tx succeeds)
+        // Receipt statuses + log counts per tx
         let tx_statuses: Vec<bool> = receipts.iter().map(|r| r.status()).collect();
+        // Serialize receipt logs for each tx before the closure.
+        // ReceiptResponse trait doesn't expose logs(), so we JSON round-trip
+        // to extract log data from the concrete receipt type.
+        let receipt_logs_json: Vec<Vec<DebankEvent>> = receipts.iter().enumerate().map(|(tx_idx, receipt)| {
+            // Serialize the receipt to JSON, then extract logs array
+            let json = serde_json::to_value(receipt).unwrap_or_default();
+            let logs = json.get("logs").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+            logs.iter().enumerate().map(|(log_idx, log_val)| {
+                let address = log_val.get("address")
+                    .and_then(|a| a.as_str())
+                    .and_then(|a| a.parse::<alloy_primitives::Address>().ok())
+                    .unwrap_or_default();
+                let topics_arr = log_val.get("topics")
+                    .and_then(|t| t.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let selector = topics_arr.first()
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let topics: Vec<String> = topics_arr.iter().skip(1)
+                    .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                    .collect();
+                let data_hex = log_val.get("data")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("0x");
+                let data = alloy_primitives::Bytes::from(
+                    alloy_primitives::hex::decode(data_hex.trim_start_matches("0x")).unwrap_or_default()
+                );
+                DebankEvent {
+                    contract_id: address,
+                    selector,
+                    topics,
+                    data,
+                    idx: log_idx,
+                    ..Default::default()
+                }
+            }).collect()
+        }).collect();
 
         let parent_hash = block.parent_hash();
         let parent_block = self.eth_api.recovered_block(parent_hash.into()).await?;
@@ -233,47 +271,76 @@ where
                         .inspect(&mut diff_db, evm_env.clone(), tx_env, &mut inspector)?;
                     diff_db.commit(state);
 
-                    // ExecutionResult.logs contains ALL logs (EVM + handler fee logs)
                     let exec_logs = exec_result.into_logs();
 
                     let arena = inspector.into_traces();
                     let (traces, error_traces, events, error_events) =
                         build_debank_traces(tx_hash, arena, &log_index);
 
-                    // Inspector events only capture EVM-internal logs.
-                    // exec_logs also includes handler-layer fee logs (transfer_fee_post_tx).
-                    // Append the extra logs as fee events.
+                    // Append fee logs not captured by the inspector.
+                    //
+                    // For successful txs: exec_logs (from ExecutionResult::Success)
+                    // contains all logs including handler fee logs. Extra logs beyond
+                    // what the inspector captured are fee events.
+                    //
+                    // For reverted txs: ExecutionResult::Revert has NO logs.
+                    // Fee logs are only available from the receipt (block executor
+                    // injects them via take_revert_logs). We use pre-serialized
+                    // receipt log data (receipt_logs_json) for these.
                     let evm_event_count = events.len() + error_events.len();
-                    let exec_log_count = exec_logs.len();
+                    let receipt_log_count = receipt_logs_json.get(idx)
+                        .map(|l| l.len()).unwrap_or(0);
 
-                    all_results.push((traces, error_traces, events, error_events, exec_log_count));
+                    all_results.push((traces, error_traces, events, error_events, receipt_log_count));
 
-                    // Build fee events from execution result logs beyond what inspector captured
-                    if exec_log_count > evm_event_count {
-                        let root_trace_id = all_results.last().unwrap().0
-                            .first().map(|t| t.id.clone()).unwrap_or_default();
-
-                        for log_offset in evm_event_count..exec_log_count {
-                            let exec_log = &exec_logs[log_offset];
-                            let selector = exec_log.topics().first()
+                    // Determine fee log source: exec_logs for success, receipt for revert
+                    let extra_log_source: Vec<DebankEvent> = if exec_logs.len() > evm_event_count {
+                        // Success path: use exec_logs
+                        exec_logs[evm_event_count..].iter().enumerate().map(|(i, log)| {
+                            let selector = log.topics().first()
                                 .map(|h| h.to_string()).unwrap_or_default();
-                            let topics = if exec_log.topics().len() > 1 {
-                                exec_log.topics()[1..].iter().map(|h| h.to_string()).collect()
+                            let topics = if log.topics().len() > 1 {
+                                log.topics()[1..].iter().map(|h| h.to_string()).collect()
                             } else {
                                 vec![]
                             };
-
-                            let pos = all_results.last().unwrap().2.len() + (log_offset - evm_event_count);
-                            let mut fee_event = DebankEvent {
-                                contract_id: exec_log.address,
+                            DebankEvent {
+                                contract_id: log.address,
                                 selector,
                                 topics,
-                                data: exec_log.data.data.clone(),
-                                parent_trace_id: root_trace_id.clone(),
-                                pos_in_parent_trace: pos,
-                                idx: log_offset,
+                                data: log.data.data.clone(),
+                                idx: evm_event_count + i,
                                 ..Default::default()
-                            };
+                            }
+                        }).collect()
+                    } else if receipt_log_count > evm_event_count {
+                        // Revert path: use receipt logs
+                        receipt_logs_json[idx][evm_event_count..].iter().enumerate().map(|(i, rl)| {
+                            DebankEvent {
+                                contract_id: rl.contract_id,
+                                selector: rl.selector.clone(),
+                                topics: rl.topics.clone(),
+                                data: rl.data.clone(),
+                                idx: evm_event_count + i,
+                                ..Default::default()
+                            }
+                        }).collect()
+                    } else {
+                        vec![]
+                    };
+
+                    if !extra_log_source.is_empty() {
+                        let root_trace_id = {
+                            let last = all_results.last().unwrap();
+                            last.0.first()
+                                .or(last.1.first())
+                                .map(|t| t.id.clone())
+                                .unwrap_or_default()
+                        };
+                        for mut fee_event in extra_log_source {
+                            let pos = all_results.last().unwrap().2.len();
+                            fee_event.parent_trace_id = root_trace_id.clone();
+                            fee_event.pos_in_parent_trace = pos;
                             fee_event.id = fee_event.debank_id();
                             all_results.last_mut().unwrap().2.push(fee_event);
                         }
