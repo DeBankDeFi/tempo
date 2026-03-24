@@ -146,42 +146,25 @@ where
             });
         }
 
-        // Receipt statuses + log counts per tx
+        // Receipt statuses + logs per tx.
+        // ReceiptResponse trait doesn't expose logs(). Extract via serde
+        // round-trip to alloy_rpc_types_eth::Log (a standard, stable type).
         let tx_statuses: Vec<bool> = receipts.iter().map(|r| r.status()).collect();
-        // Serialize receipt logs for each tx before the closure.
-        // ReceiptResponse trait doesn't expose logs(), so we JSON round-trip
-        // to extract log data from the concrete receipt type.
-        let receipt_logs_json: Vec<Vec<DebankEvent>> = receipts.iter().enumerate().map(|(tx_idx, receipt)| {
-            // Serialize the receipt to JSON, then extract logs array
-            let json = serde_json::to_value(receipt).unwrap_or_default();
-            let logs = json.get("logs").and_then(|l| l.as_array()).cloned().unwrap_or_default();
-            logs.iter().enumerate().map(|(log_idx, log_val)| {
-                let address = log_val.get("address")
-                    .and_then(|a| a.as_str())
-                    .and_then(|a| a.parse::<alloy_primitives::Address>().ok())
-                    .unwrap_or_default();
-                let topics_arr = log_val.get("topics")
-                    .and_then(|t| t.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                let selector = topics_arr.first()
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let topics: Vec<String> = topics_arr.iter().skip(1)
-                    .filter_map(|t| t.as_str().map(|s| s.to_string()))
-                    .collect();
-                let data_hex = log_val.get("data")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("0x");
-                let data = alloy_primitives::Bytes::from(
-                    alloy_primitives::hex::decode(data_hex.trim_start_matches("0x")).unwrap_or_default()
-                );
+        let receipt_logs_per_tx: Vec<Vec<DebankEvent>> = receipts.iter().map(|receipt| {
+            let logs: Vec<alloy_rpc_types_eth::Log> = serde_json::to_value(receipt).ok()
+                .and_then(|v| v.get("logs").cloned())
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            logs.iter().enumerate().map(|(log_idx, log)| {
+                let selector = log.topics().first()
+                    .map(|h| h.to_string()).unwrap_or_default();
+                let topics: Vec<String> = log.topics().iter().skip(1)
+                    .map(|h| h.to_string()).collect();
                 DebankEvent {
-                    contract_id: address,
+                    contract_id: log.address(),
                     selector,
                     topics,
-                    data,
+                    data: log.data().data.clone(),
                     idx: log_idx,
                     ..Default::default()
                 }
@@ -286,9 +269,9 @@ where
                     // For reverted txs: ExecutionResult::Revert has NO logs.
                     // Fee logs are only available from the receipt (block executor
                     // injects them via take_revert_logs). We use pre-serialized
-                    // receipt log data (receipt_logs_json) for these.
+                    // receipt log data (receipt_logs_per_tx) for these.
                     let evm_event_count = events.len() + error_events.len();
-                    let receipt_log_count = receipt_logs_json.get(idx)
+                    let receipt_log_count = receipt_logs_per_tx.get(idx)
                         .map(|l| l.len()).unwrap_or(0);
 
                     all_results.push((traces, error_traces, events, error_events, receipt_log_count));
@@ -315,7 +298,7 @@ where
                         }).collect()
                     } else if receipt_log_count > evm_event_count {
                         // Revert path: use receipt logs
-                        receipt_logs_json[idx][evm_event_count..].iter().enumerate().map(|(i, rl)| {
+                        receipt_logs_per_tx[idx][evm_event_count..].iter().enumerate().map(|(i, rl)| {
                             DebankEvent {
                                 contract_id: rl.contract_id,
                                 selector: rl.selector.clone(),
