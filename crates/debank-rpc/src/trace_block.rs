@@ -125,8 +125,6 @@ where
 
         let block_txs = block.body().transactions();
         let mut debank_txs: Vec<DebankTransaction> = Vec::with_capacity(block_txs.len());
-        // Track receipt log counts per tx for fee log append
-        let mut receipt_log_counts: Vec<usize> = Vec::new();
 
         for index in 0..block_txs.len() {
             let tx = &block_txs[index];
@@ -146,10 +144,6 @@ where
                 transaction_index: receipt.transaction_index().unwrap_or(0),
                 value: tx.value(),
             });
-            // Count receipt logs for this tx (for fee log detection later)
-            // ReceiptResponse doesn't expose logs directly, so we count via
-            // the difference after tracing
-            receipt_log_counts.push(0); // TODO: populate from concrete receipt type
         }
 
         let parent_hash = block.parent_hash();
@@ -212,7 +206,8 @@ where
                 let mut diff_db = StateDiffTraceDB::new(cache_db);
 
                 let log_index = std::cell::RefCell::new(0usize);
-                let mut all_results = Vec::new();
+                // (traces, error_traces, events, error_events, exec_log_count)
+                let mut all_results: Vec<(Vec<DebankTrace>, Vec<DebankTrace>, Vec<DebankEvent>, Vec<DebankEvent>, usize)> = Vec::new();
 
                 for (idx, tx) in block.transactions_recovered().enumerate() {
                     let tx_hash = tx_hashes[idx];
@@ -230,13 +225,55 @@ where
                         &tx,
                     );
 
-                    let revm::context::result::ResultAndState { state, .. } = eth_api
+                    let revm::context::result::ResultAndState { result: exec_result, state } = eth_api
                         .inspect(&mut diff_db, evm_env.clone(), tx_env, &mut inspector)?;
                     diff_db.commit(state);
 
+                    // ExecutionResult.logs contains ALL logs (EVM + handler fee logs)
+                    let exec_logs = exec_result.into_logs();
+
                     let arena = inspector.into_traces();
-                    let traces = build_debank_traces(tx_hash, arena, &log_index);
-                    all_results.push(traces);
+                    let (traces, error_traces, events, error_events) =
+                        build_debank_traces(tx_hash, arena, &log_index);
+
+                    // Inspector events only capture EVM-internal logs.
+                    // exec_logs also includes handler-layer fee logs (transfer_fee_post_tx).
+                    // Append the extra logs as fee events.
+                    let evm_event_count = events.len() + error_events.len();
+                    let exec_log_count = exec_logs.len();
+
+                    all_results.push((traces, error_traces, events, error_events, exec_log_count));
+
+                    // Build fee events from execution result logs beyond what inspector captured
+                    if exec_log_count > evm_event_count {
+                        let root_trace_id = all_results.last().unwrap().0
+                            .first().map(|t| t.id.clone()).unwrap_or_default();
+
+                        for log_offset in evm_event_count..exec_log_count {
+                            let exec_log = &exec_logs[log_offset];
+                            let selector = exec_log.topics().first()
+                                .map(|h| h.to_string()).unwrap_or_default();
+                            let topics = if exec_log.topics().len() > 1 {
+                                exec_log.topics()[1..].iter().map(|h| h.to_string()).collect()
+                            } else {
+                                vec![]
+                            };
+
+                            let pos = all_results.last().unwrap().2.len() + (log_offset - evm_event_count);
+                            let mut fee_event = DebankEvent {
+                                contract_id: exec_log.address,
+                                selector,
+                                topics,
+                                data: exec_log.data.data.clone(),
+                                parent_trace_id: root_trace_id.clone(),
+                                pos_in_parent_trace: pos,
+                                idx: log_offset,
+                                ..Default::default()
+                            };
+                            fee_event.id = fee_event.debank_id();
+                            all_results.last_mut().unwrap().2.push(fee_event);
+                        }
+                    }
                 }
 
                 let change_addresses =
@@ -248,7 +285,7 @@ where
             .await?;
 
         // Assemble block file
-        for (trace, error_trace, event, error_event) in traces_result {
+        for (trace, error_trace, event, error_event, _) in traces_result {
             block_file.traces.extend(trace);
             block_file.error_traces.extend(error_trace);
             block_file.events.extend(event);
