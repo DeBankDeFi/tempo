@@ -84,8 +84,9 @@ Revert tx: `ExecutionResult::Revert` 没有 logs 字段。handler 的 fee log �
 
 `build_debank_traces()` 内部按 `CallTraceNode.trace.success` 分类 traces/events 到 success 或 error 列表。组装 block_file 时根据 receipt status 做两种修正：
 
-1. **成功 tx (status=0x1)**: 保留 per-node 分类。仅修正 AA tx (0x76) 的根 trace — AA tx 的根 trace 被 `CallTraceArena` 标记为 `success=false`（handler 包装），但 tx 实际成功。将 root trace (`trace_address=[]`) 及其直属 events 从 error 列表移到 success 列表，内部 revert 子调用（try/catch 场景）保留在 error 列表。与 reth-x 行为一致。
-2. **失败 tx (status=0x0)**: 所有 traces/events 归入 error 列表。
+1. **成功 tx, root trace 在 traces 中（正常 tx）**: 保留 per-node 分类。内部 revert 子调用（try/catch 场景）保留在 error 列表。与 reth-x 行为一致。
+2. **成功 tx, root trace 在 error_traces 中（AA tx）**: `CallTraceArena` 将 handler 包装和子调用都标记为 `success=false`，arena 的 success 标志对整个调用树不可靠。将所有 error_traces/error_events 合并回 success 列表。
+3. **失败 tx (status=0x0)**: 所有 traces/events 归入 error 列表。
 
 **与 reth-x 的差异**:
 

@@ -346,37 +346,36 @@ where
 
         // Assemble block file.
         // Classification uses per-node success from build_debank_traces, with
-        // receipt status as override for two edge cases:
+        // receipt status as override:
         //
-        // 1. Successful tx with misclassified root trace (AA tx):
-        //    CallTraceArena reports success=false for the AA wrapper even when
-        //    the tx succeeds (receipt status=0x1). Fix: move only the root
-        //    trace (trace_address=[]) from error_traces to traces, and its
-        //    direct events from error_events to events. Internal revert
-        //    sub-calls (try/catch) stay in error lists.
+        // 1. Successful tx, root trace correctly classified (in traces):
+        //    Keep per-node classification. Internal revert sub-calls
+        //    (try/catch) stay in error lists. Matches reth-x behavior.
         //
-        // 2. Failed tx: all traces/events go to error lists.
+        // 2. Successful tx, root trace misclassified (in error_traces):
+        //    AA tx — CallTraceArena marks the handler wrapper and its
+        //    children as success=false even though the tx succeeds. The
+        //    arena's success flags are unreliable for the entire tree,
+        //    so merge all error_traces/events into success lists.
+        //
+        // 3. Failed tx: all traces/events go to error lists.
         for (idx, (mut trace, mut error_trace, mut event, mut error_event, _)) in
             traces_result.into_iter().enumerate()
         {
             let tx_success = tx_statuses.get(idx).copied().unwrap_or(true);
             if tx_success {
-                // Move misclassified root trace from error_traces to traces.
-                // Root trace has trace_address == [] (empty).
-                if let Some(root_pos) = error_trace.iter().position(|t| t.trace_address.is_empty()) {
-                    let root = error_trace.remove(root_pos);
-                    let root_id = root.id.clone();
-                    trace.push(root);
-                    // Move root's direct events from error_events to events
-                    let (root_events, other_events): (Vec<_>, Vec<_>) =
-                        error_event.into_iter().partition(|e| e.parent_trace_id == root_id);
-                    event.extend(root_events);
-                    error_event = other_events;
+                let root_misclassified = error_trace.iter().any(|t| t.trace_address.is_empty());
+                if root_misclassified {
+                    // AA tx: arena success flags unreliable, merge all
+                    trace.extend(error_trace);
+                    event.extend(error_event);
+                } else {
+                    // Normal tx: keep per-node classification (try/catch)
+                    block_file.error_traces.extend(error_trace);
+                    block_file.error_events.extend(error_event);
                 }
                 block_file.traces.extend(trace);
                 block_file.events.extend(event);
-                block_file.error_traces.extend(error_trace);
-                block_file.error_events.extend(error_event);
             } else {
                 // Tx failed: all traces/events go to error lists
                 error_trace.extend(trace);
