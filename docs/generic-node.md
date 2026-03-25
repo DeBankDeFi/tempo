@@ -170,9 +170,9 @@ block 级 `storage_contracts`（从 `diff.cache` 提取）不受影响，能正�
 
 Tempo 0x76 tx 支持 `calls: Vec<Call>`（多个调用原子执行）。`DebankTransaction` 的 `to`/`input`/`value` 取自第一个 call（`receipt.to()` / `Transaction::input()` / `tx.value()`），其余 call 的信息只在 `traces` 中可见。
 
-**当前影响**: 无。链上 AA tx 均为单 call（`calls.length = 1`）。
+**链上已存在**: block 0x9eeb98 有 2-call AA tx（approve TIP-20 + swap 合约），`txs` 中 `to=null, input=第一个call`，第二个 call 仅在 traces `trace_address=[1]` 可见。
 
-**未来风险**: 如果出现多 call AA tx（如一笔 tx 调用 A、B、C 三个合约），`txs` 只展示 `to=A`，DeBankCore 可能无法从 `txs` 层面感知 B、C 的存在（需从 traces 获取）。届时需评估是否扩展 `DebankTransaction` 结构或在 DeBankCore 侧适配。
+**影响**: 需确认 DeBankCore 是否仅消费 traces（则无影响）还是依赖 txs.to/input（则需适配）。
 
 ### genesis native token 无实际意义 (CTO CR #11)
 
