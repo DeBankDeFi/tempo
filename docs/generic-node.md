@@ -160,15 +160,11 @@ block 级 `storage_contracts`（从 `diff.cache` 提取）不受影响，能正�
 
 **已知限制**，与 reth-x 行为一致（reth-x 标准预编译同样不走 SSTORE）。
 
-### always-increment log_index 的 idx gap (CTO 新增关注, P2)
+### event idx 连续性保证 (CTO 新增关注, 已修复)
 
-`debank_trace.rs` 的 `build_debank_traces` 中 `*log_index += 1` 对所有 event 无条件递增（commit 11189e66），不管 trace node 的 success 标志。
+`build_debank_traces` 中 `*log_index += 1` 对所有 event 无条件递增（AA tx 必需），但分类后 events/error_events 拆分可能导致 idx 有 gap。
 
-**必要性**: AA tx root trace `success=false` → 所有 events 进 `error_events` → 如果只在 `success=true` 时递增，所有 events 的 idx 都是 0 → merge 到 events list 后 idx 全部重复。
-
-**副作用**: 对于成功 tx 有内部 revert 子调用（try/catch with logs）的场景，events list 中的 idx 会跳号（gap 被 error_events 消耗）。idx 仍唯一递增，只是不连续。
-
-**影响评估**: Tempo 当前 tx 类型不触发此场景。validation_hash 不使用 idx（使用 id）。需确认 DeBankCore 的 idx 用途（如果仅做排序/去重则无影响，如果做 receipt log 精确匹配则有差异）。
+**修复**: 在分类完成后，对所有 events + error_events 按原始 idx 排序，重新分配连续的 `[0, 1, 2, ...]` idx。保证 block 内 idx 全局连续无 gap。
 
 ### genesis native token 无实际意义 (CTO CR #11)
 

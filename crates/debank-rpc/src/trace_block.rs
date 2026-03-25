@@ -385,6 +385,25 @@ where
             }
         }
 
+        // Reassign event idx to ensure block-global continuity (no gaps).
+        // build_debank_traces always increments log_index (needed for AA tx),
+        // but classification may split events between events/error_events,
+        // leaving gaps in idx. Sort by current idx (preserves original
+        // per-block order) and reassign [0, 1, 2, ...] sequentially.
+        let mut idx_map: Vec<(usize, bool, usize)> = block_file.events.iter().enumerate()
+            .map(|(pos, e)| (e.idx, false, pos))
+            .chain(block_file.error_events.iter().enumerate()
+                .map(|(pos, e)| (e.idx, true, pos)))
+            .collect();
+        idx_map.sort_by_key(|(old_idx, _, _)| *old_idx);
+        for (new_idx, (_, is_error, pos)) in idx_map.into_iter().enumerate() {
+            if is_error {
+                block_file.error_events[pos].idx = new_idx;
+            } else {
+                block_file.events[pos].idx = new_idx;
+            }
+        }
+
         let mut state_diff = state_diff;
         state_diff.hash = block_state_root;
         state_diff.parent_hash = parent_state_root;
