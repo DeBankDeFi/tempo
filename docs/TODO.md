@@ -19,7 +19,21 @@
 - 前置依赖：DeBankCore `engine.py` 中 Tempo 需加入 gasPrice 配置列表（当前硬编码为 0x0）
 - 详见 `docs/test-report.md` 中"pre_traceMany 缺少 TIP20 fee 相关 log"章节
 
-### 3. dev 机器清理
+### 3. trace_debankBlock 上线
+
+- [ ] background-tracer dry-run 验证（上线阻塞项，需 binary 部署到 dev 机器）
+- [ ] 合并 PR #4 (`feature/debank_rpc` → `debank`)
+- [ ] 生产部署（2 台机器更新镜像）
+- [ ] 部署 background-tracer sidecar（Kafka/S3 + chain_id=4217）
+
+### 4. 多 call AA tx 适配
+
+- Tempo 0x76 tx 支持 `calls: Vec<Call>` 多调用原子执行
+- 当前 `DebankTransaction.to/input/value` 只展示第一个 call，其余 call 信息仅在 traces 中
+- 链上 AA tx 目前均为单 call，暂无影响
+- 如果出现多 call AA tx 需评估扩展 DebankTransaction 结构或 DeBankCore 侧适配
+
+### 5. dev 机器清理
 - blockchain-misc-x3 上的 tempo 容器已停止，EBS 已 detach（snapshot: snap-08859f84cfb8b1611）
 - 确认不再需要后可删除 volume vol-0e14b18861b31f2cc 和 snapshot
 

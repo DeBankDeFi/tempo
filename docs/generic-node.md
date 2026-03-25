@@ -166,6 +166,14 @@ block 级 `storage_contracts`（从 `diff.cache` 提取）不受影响，能正�
 
 **修复**: 在分类完成后，对所有 events + error_events 按原始 idx 排序，重新分配连续的 `[0, 1, 2, ...]` idx。保证 block 内 idx 全局连续无 gap。
 
+### 多 call AA tx 的 DebankTransaction 只展示第一个 call
+
+Tempo 0x76 tx 支持 `calls: Vec<Call>`（多个调用原子执行）。`DebankTransaction` 的 `to`/`input`/`value` 取自第一个 call（`receipt.to()` / `Transaction::input()` / `tx.value()`），其余 call 的信息只在 `traces` 中可见。
+
+**当前影响**: 无。链上 AA tx 均为单 call（`calls.length = 1`）。
+
+**未来风险**: 如果出现多 call AA tx（如一笔 tx 调用 A、B、C 三个合约），`txs` 只展示 `to=A`，DeBankCore 可能无法从 `txs` 层面感知 B、C 的存在（需从 traces 获取）。届时需评估是否扩展 `DebankTransaction` 结构或在 DeBankCore 侧适配。
+
 ### genesis native token 无实际意义 (CTO CR #11)
 
 genesis 块创建了 `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` native token 的 synthetic tx。Tempo 实际无 native token（gas 用 TIP-20 支付），该资产永远无转账。不影响功能，DeBankCore 链配置层面建议标注忽略此资产。
