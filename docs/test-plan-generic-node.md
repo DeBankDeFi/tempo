@@ -9,7 +9,8 @@
 - 日期: 2026-03-25
 - 测试区块:
   - 0x9a1eb0 (10100400, 4 txs 含 AA tx, 主测试块)
-  - 0x9a2040 (10100800, 含 revert tx)
+  - 0x9a2040 (10100800, 含 revert tx, revert 前无 event)
+  - 0x99e15c (10084700, 含 revert tx, revert 前有 6 个 EVM event)
   - 0x99b150 (10072400, 含 CREATE trace)
   - 0x9e8900 (10356992, 含 EIP-1559 tx)
   - 0x0 (genesis), 0x1 (empty)
@@ -22,16 +23,16 @@
 | 2. block | 9 | 9 | 0 | 0 |
 | 3. txs | 33 | 33 | 0 | 0 |
 | 4. traces | 10 | 10 | 0 | 0 |
-| 5. events | 10 | 6 | 0 | 4 (idx 验证待测) |
-| 6. error_traces/events | 6 | 6 | 0 | 0 |
+| 5. events | 10 | 10 | 0 | 0 |
+| 6. error_traces/events | 10 | 8 | 0 | 2 (6.9/6.10 待测) |
 | 7. storage_contracts | 3 | 3 | 0 | 0 |
 | 8. state_diff (RLP) | 5 | 5 | 0 | 0 |
 | 9. header | 20 | 20 | 0 | 0 |
 | 10. validation_hash | 3 | 3 | 0 | 0 |
-| 11. 特殊区块 | 7 | 7 | 0 | 0 |
+| 11. 特殊区块 | 10 | 8 | 0 | 2 (11.4a/11.4b 待测) |
 | 12. 兼容性 | 2 | 2 | 0 | 0 |
 | EIP-1559 覆盖 | 1 | 1 | 0 | 0 |
-| **合计** | **113** | **109** | **0** | **4 (待测)** |
+| **合计** | **119** | **113** | **0** | **6 (待测)** |
 
 ### trace 类型覆盖
 
@@ -40,8 +41,8 @@
 | call | PASS |
 | delegatecall | PASS |
 | create | PASS (block 0x99b150) |
-| staticcall | 未覆盖 (Tempo 链上未发现) |
-| suicide | 未覆盖 (Tempo 代码支持 SELFDESTRUCT 但链上未发现, EIP-6780 后极少触发) |
+| staticcall | PASS (block 0x99e15c, call_type="staticcall", 与 trace_transaction 一致) |
+| suicide | 未覆盖 (识别字段: `call_create_type="suicide"`, 采样 11100 个区块 (block 1K-11.1M, 步长 1000, 覆盖全链) 未发现, EIP-6780 后极少触发) |
 
 ### 已知的预期差异
 
@@ -215,16 +216,19 @@
 
 | # | 测试项 | 验证方法 | 结果 |
 |---|--------|---------|------|
-| 5.4.1 | idx 无重复 | 所有 event idx 排序后 unique 数量 = 总数量 | 待测 |
-| 5.4.2 | idx 全局递增 | idx 值 = [0, 1, 2, ..., N-1] 连续序列 | 待测 |
-| 5.4.3 | idx 跨 tx 连续 | 多 tx 区块: tx[0] 的 events idx 从 0 开始, tx[1] 的 idx 接续 tx[0] 结束位置 | 待测 |
-| 5.4.4 | fee event idx 不与 EVM event 重复 | 含 fee log 的区块: fee event idx 在 EVM events idx 之后 | 待测 |
+| 5.4.1 | idx 无重复 | 所有 event idx 排序后 unique 数量 = 总数量。block 0x9a1eb0: 9 unique/9 total; block 0x9a2040: 5/5 | PASS |
+| 5.4.2 | idx 全局递增 | idx 值 = [0, 1, 2, ..., N-1] 连续序列。block 0x9a1eb0: [0..8]; block 0x9a2040: [0..4] | PASS |
+| 5.4.3 | idx 跨 tx 连续 | 多 tx 区块 0x9a1eb0: tx0 idx=[0-4], tx1 idx=[5-6], tx2 idx=[7-8]，无间隔无重叠 | PASS |
+| 5.4.4 | fee event idx 不与 EVM event 重复 | block 0x9a1eb0 tx0: EVM idx=[0,1,2,3], fee idx=[4]，fee 在 EVM 之后 | PASS |
 
 ---
 
 ## 6. block_file.error_traces / error_events
 
-测试区块: 0x9a2040 (含 1 笔 revert tx, status=0x0) + 0x9a1eb0 (全部成功, 含 AA tx)
+测试区块:
+- 0x9a2040 (含 1 笔 revert tx, status=0x0, revert 前无 EVM event)
+- 0x99e15c (含 1 笔 revert tx, status=0x0, revert 前有 6 个 EVM event — 触发 CR #2 bug 场景)
+- 0x9a1eb0 (全部成功, 含 AA tx)
 
 验证方法: 分类依据为 `eth_getTransactionReceipt.status` — status=0x0 的 tx 其 traces/events 进 error 列表, status=0x1 的进 success 列表。数量对比使用 `trace_transaction` 和 `eth_getTransactionReceipt.logs`。
 
@@ -238,6 +242,8 @@
 | 6.6 | traces + error_traces = trace_transaction | per tx: `trace_transaction` 返回条数 = debankBlock 中该 tx 的 traces + error_traces 条数 | PASS (4/4 txs) |
 | 6.7 | events + error_events = receipt logs | per block: `sum(eth_getTransactionReceipt.logs.length)` = debankBlock events + error_events | PASS (5=5) |
 | 6.8 | error 字段非空 | error_traces 中 error 字段 = "Reverted" (非空字符串) | PASS |
+| 6.9 | revert tx with EVM events: fee log 存在 | block 0x99e15c, tx `0x631c...d7bd`: revert 前 emit 6 个 event → 6 个 error_events (EVM) + 1 个 fee error_event (handler)。验证: error_events 中存在 contract_id=`0x20c0...0000` 的 fee Transfer log, 且 error_events 总数 = 6 (EVM) + 1 (fee) = 7。对比: `eth_getTransactionReceipt.logs` 有 1 条 fee log | 待测 |
+| 6.10 | revert tx with EVM events: event 总数一致 | block 0x99e15c: debankBlock error_events 数 = inspector 捕获的 EVM events 数 + receipt fee log 数 | 待测 |
 
 ---
 
@@ -365,6 +371,8 @@ RLP 解码验证使用 Python rlp 库，对 block 0x9a1eb0, 0x99b150, 0x0, 0x1 �
 | 11.2 | 空区块 (block 1) | `trace_debankBlock("0x1")` → 仅系统 tx, 无 events, state_diff 全空 | PASS |
 | 11.3 | Fee 区块 (0x9a1eb0) | 检查 events 含 `contract_id` 以 `0x20c0` 开头的 Transfer, storage_contracts 含 FeeManager 地址 | PASS |
 | 11.4 | AA tx 区块 (0x9a1eb0) | AA tx (type=0x76) 的 traces 在 traces 中 (非 error_traces), 基于 `eth_getTransactionReceipt.status=0x1` 分类 | PASS (2 条) |
+| 11.4a | AA tx root trace 分类 | AA tx 的 root trace (`trace_address=[]`) 在 traces 中而非 error_traces 中。验证: debankBlock traces 中存在该 tx 的 `trace_address=[]` 条目 | 待测 |
+| 11.4b | AA tx root events 分类 | AA tx root trace 的直属 events (`parent_trace_id` = root trace id) 在 events 中而非 error_events 中 | 待测 |
 | 11.5 | 多 tx 区块 | 检查 txs[].idx 从 0 递增 | PASS [0,1,2,3] |
 | 11.6 | CREATE 区块 (0x99b150) | traces 含 type="create", 与 `trace_transaction` 对比一致; state_diff.new_codes=1 | PASS |
 | 11.7 | 不存在的区块 | `trace_debankBlock("0xffffff00")` → 返回 JSON-RPC error | PASS ("block not found") |

@@ -196,6 +196,7 @@ where
         let (evm_env, _) = self.eth_api.evm_env_at(block_id).await?;
 
         let parent_block_id = BlockId::hash(parent_hash);
+        let tx_statuses_clone = tx_statuses.clone();
 
         let (traces_result, state_diff, change_addresses) = self
             .eth_api
@@ -253,20 +254,37 @@ where
                     // contains all logs including handler fee logs. Extra logs beyond
                     // what the inspector captured are fee events.
                     //
-                    // For reverted txs: ExecutionResult::Revert has NO logs.
-                    // Fee logs are only available from the receipt (block executor
-                    // injects them via take_revert_logs). We use pre-serialized
-                    // receipt log data (receipt_logs_per_tx) for these.
+                    // For reverted txs: ExecutionResult::Revert has NO logs (exec_logs
+                    // is empty). ALL receipt logs are handler-injected fee logs (EVM
+                    // logs are reverted and don't enter the receipt). Use receipt logs
+                    // directly — do NOT compare with evm_event_count, because the
+                    // inspector may have captured N error_events from pre-revert emits,
+                    // and receipt_log_count (fee only) < N would cause fee log loss.
                     let evm_event_count = events.len() + error_events.len();
-                    let receipt_log_count = receipt_logs_per_tx.get(idx)
-                        .map(|l| l.len()).unwrap_or(0);
+                    let tx_reverted = !tx_statuses_clone.get(idx).copied().unwrap_or(true);
+                    let receipt_logs = receipt_logs_per_tx.get(idx)
+                        .cloned().unwrap_or_default();
 
-                    all_results.push((traces, error_traces, events, error_events, receipt_log_count));
+                    all_results.push((traces, error_traces, events, error_events, receipt_logs.len()));
 
                     // Determine fee log source: exec_logs for success, receipt for revert.
                     // Use block-global log_index for idx (not tx-local offset).
-                    let extra_log_source: Vec<DebankEvent> = if exec_logs.len() > evm_event_count {
-                        // Success path: use exec_logs
+                    let extra_log_source: Vec<DebankEvent> = if tx_reverted {
+                        // Revert path: all receipt logs are fee logs
+                        receipt_logs.iter().map(|rl| {
+                            let current_idx = *log_index.borrow();
+                            *log_index.borrow_mut() += 1;
+                            DebankEvent {
+                                contract_id: rl.contract_id,
+                                selector: rl.selector.clone(),
+                                topics: rl.topics.clone(),
+                                data: rl.data.clone(),
+                                idx: current_idx,
+                                ..Default::default()
+                            }
+                        }).collect()
+                    } else if exec_logs.len() > evm_event_count {
+                        // Success path: use exec_logs beyond inspector-captured events
                         exec_logs[evm_event_count..].iter().map(|log| {
                             let selector = log.topics().first()
                                 .map(|h| h.to_string()).unwrap_or_default();
@@ -282,20 +300,6 @@ where
                                 selector,
                                 topics,
                                 data: log.data.data.clone(),
-                                idx: current_idx,
-                                ..Default::default()
-                            }
-                        }).collect()
-                    } else if receipt_log_count > evm_event_count {
-                        // Revert path: use receipt logs
-                        receipt_logs_per_tx[idx][evm_event_count..].iter().map(|rl| {
-                            let current_idx = *log_index.borrow();
-                            *log_index.borrow_mut() += 1;
-                            DebankEvent {
-                                contract_id: rl.contract_id,
-                                selector: rl.selector.clone(),
-                                topics: rl.topics.clone(),
-                                data: rl.data.clone(),
                                 idx: current_idx,
                                 ..Default::default()
                             }
@@ -341,20 +345,38 @@ where
             .await?;
 
         // Assemble block file.
-        // Use receipt status as the authoritative success indicator.
-        // CallTraceArena may report success=false for AA tx wrappers even when
-        // the tx actually succeeds (receipt status=0x1). In that case, merge
-        // error_traces/error_events back into traces/events.
+        // Classification uses per-node success from build_debank_traces, with
+        // receipt status as override for two edge cases:
+        //
+        // 1. Successful tx with misclassified root trace (AA tx):
+        //    CallTraceArena reports success=false for the AA wrapper even when
+        //    the tx succeeds (receipt status=0x1). Fix: move only the root
+        //    trace (trace_address=[]) from error_traces to traces, and its
+        //    direct events from error_events to events. Internal revert
+        //    sub-calls (try/catch) stay in error lists.
+        //
+        // 2. Failed tx: all traces/events go to error lists.
         for (idx, (mut trace, mut error_trace, mut event, mut error_event, _)) in
             traces_result.into_iter().enumerate()
         {
             let tx_success = tx_statuses.get(idx).copied().unwrap_or(true);
             if tx_success {
-                // Tx succeeded: all traces/events go to success lists
-                trace.extend(error_trace);
-                event.extend(error_event);
+                // Move misclassified root trace from error_traces to traces.
+                // Root trace has trace_address == [] (empty).
+                if let Some(root_pos) = error_trace.iter().position(|t| t.trace_address.is_empty()) {
+                    let root = error_trace.remove(root_pos);
+                    let root_id = root.id.clone();
+                    trace.push(root);
+                    // Move root's direct events from error_events to events
+                    let (root_events, other_events): (Vec<_>, Vec<_>) =
+                        error_event.into_iter().partition(|e| e.parent_trace_id == root_id);
+                    event.extend(root_events);
+                    error_event = other_events;
+                }
                 block_file.traces.extend(trace);
                 block_file.events.extend(event);
+                block_file.error_traces.extend(error_trace);
+                block_file.error_events.extend(error_event);
             } else {
                 // Tx failed: all traces/events go to error lists
                 error_trace.extend(trace);
