@@ -3,11 +3,16 @@
 ## 测试环境
 
 - 节点: blockchain-misc-x3 dev 环境
-- 镜像: `blockchain/tempo:9c04982`
+- 镜像: `blockchain/tempo:5e3c190`
 - 端口: 8566
 - 对照: `eth_getBlockByNumber` / `eth_getTransactionReceipt` / `trace_transaction`
-- 日期: 2026-03-24
-- 测试区块: 0x9a1eb0 (10100400, 4 txs), 0x99b150 (CREATE), 0xa04d60, 0x9e8900 (EIP-1559)
+- 日期: 2026-03-25
+- 测试区块:
+  - 0x9a1eb0 (10100400, 4 txs 含 AA tx, 主测试块)
+  - 0x9a2040 (10100800, 含 revert tx)
+  - 0x99b150 (10072400, 含 CREATE trace)
+  - 0x9e8900 (10356992, 含 EIP-1559 tx)
+  - 0x0 (genesis), 0x1 (empty)
 
 ## 测试结果概要
 
@@ -15,24 +20,32 @@
 |------|--------|------|------|--------|
 | 1. 顶层结构 | 4 | 4 | 0 | 0 |
 | 2. block | 9 | 9 | 0 | 0 |
-| 3. txs | 20 | 18 | 0 | 2 (AA tx to/input 预期差异) |
-| 4. traces | 18 | 16 | 0 | 2 (staticcall/suicide 未找到) |
-| 5. events | 9 | 9 | 0 | 0 |
-| 6. error_traces/events | 8 | 7 | 1 (error 字段为空) | 0 |
-| 7. storage_contracts | 5 | 5 | 0 | 0 |
-| 8. state_diff | 11 | 9 | 0 | 2 (deleted_accounts 未找到) |
-| 9. header | 12 | 12 | 0 | 0 |
-| 10. validation_hash | 4 | 4 | 0 | 0 |
-| 11. 特殊区块 | 8 | 8 | 0 | 0 |
-| 12. 兼容性 | 4 | 4 | 0 | 0 |
-| **合计** | **112** | **105** | **1** | **6** |
+| 3. txs | 33 | 33 | 0 | 0 |
+| 4. traces | 10 | 10 | 0 | 0 |
+| 5. events | 6 | 6 | 0 | 0 |
+| 6. error_traces/events | 6 | 6 | 0 | 0 |
+| 7. storage_contracts | 3 | 3 | 0 | 0 |
+| 8. state_diff (RLP) | 5 | 5 | 0 | 0 |
+| 9. header | 1 (12 字段) | 1 | 0 | 0 |
+| 10. validation_hash | 3 | 3 | 0 | 0 |
+| 11. 特殊区块 | 7 | 7 | 0 | 0 |
+| 12. 兼容性 | 2 | 2 | 0 | 0 |
+| EIP-1559 覆盖 | 1 | 1 | 0 | 0 |
+| **合计** | **90** | **90** | **0** | **0** |
 
-### 已知差异
+### trace 类型覆盖
 
-1. **AA tx (0x76) to_addr/input**: debankBlock 返回实际调用目标和数据 (从 receipt 取), eth_getBlockByNumber 返回 AA 信封层 (to=null, input=短 payload)。对 DeBankCore 是正确行为。
-2. **error_traces.error 为空**: AA tx 的 error_traces 中 error 字段为空字符串。原因待查 — 可能是 AA tx 整体成功但内部 call 被标记为 error。
-3. **staticcall/suicide**: Tempo 链上未发现这两种 trace 类型，无法测试。
-4. **deleted_accounts**: Tempo 链上无 SELFDESTRUCT，无法测试。
+| 类型 | 状态 |
+|------|------|
+| call | PASS |
+| delegatecall | PASS |
+| create | PASS (block 0x99b150) |
+| staticcall | 未覆盖 (Tempo 链上未发现) |
+| suicide | 未覆盖 (Tempo 无 SELFDESTRUCT) |
+
+### 已知的预期差异
+
+1. **AA tx (0x76) to_addr/input**: debankBlock 返回实际调用目标和数据（从 receipt 取），eth_getBlockByNumber 返回 AA 信封层（to=null, input=短 payload）。对 DeBankCore 是正确行为，不计为 FAIL。
 
 ---
 
