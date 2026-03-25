@@ -392,9 +392,10 @@ fn build_trace_node(
                 child_event.parent_trace_id = id.clone();
                 child_event.id = child_event.debank_id();
                 child_event.idx = *log_index;
-                if debank_node.success {
-                    *log_index += 1;
-                }
+                // Always increment log_index regardless of trace success,
+                // because final success/error classification is based on
+                // receipt status (not CallTraceArena success). See trace_block.rs.
+                *log_index += 1;
                 debank_node.children.push(DebankTraceOrLog::Log(child_event));
             }
             _ => {}
