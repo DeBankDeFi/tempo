@@ -3,7 +3,7 @@
 ## 测试环境
 
 - 节点: blockchain-misc-x3 dev 环境
-- 镜像: `blockchain/tempo:5e3c190`
+- 镜像: `blockchain/tempo:e13d513`
 - 端口: 8566
 - 对照: `eth_getBlockByNumber` / `eth_getTransactionReceipt` / `trace_transaction`
 - 日期: 2026-03-25
@@ -24,15 +24,15 @@
 | 3. txs | 33 | 33 | 0 | 0 |
 | 4. traces | 10 | 10 | 0 | 0 |
 | 5. events | 10 | 10 | 0 | 0 |
-| 6. error_traces/events | 10 | 8 | 0 | 2 (6.9/6.10 待测) |
+| 6. error_traces/events | 10 | 10 | 0 | 0 |
 | 7. storage_contracts | 3 | 3 | 0 | 0 |
 | 8. state_diff (RLP) | 5 | 5 | 0 | 0 |
 | 9. header | 20 | 20 | 0 | 0 |
 | 10. validation_hash | 3 | 3 | 0 | 0 |
-| 11. 特殊区块 | 10 | 8 | 0 | 2 (11.4a/11.4b 待测) |
+| 11. 特殊区块 | 10 | 10 | 0 | 0 |
 | 12. 兼容性 | 2 | 2 | 0 | 0 |
 | EIP-1559 覆盖 | 1 | 1 | 0 | 0 |
-| **合计** | **119** | **113** | **0** | **6 (待测)** |
+| **合计** | **119** | **119** | **0** | **0** |
 
 ### trace 类型覆盖
 
@@ -47,6 +47,7 @@
 ### 已知的预期差异
 
 1. **AA tx (0x76) to_addr/input**: debankBlock 返回实际调用目标和数据（从 receipt 取），eth_getBlockByNumber 返回 AA 信封层（to=null, input=短 payload）。对 DeBankCore 是正确行为，不计为 FAIL。
+2. **Revert tx with EVM events**: `events + error_events != receipt logs`。原因：revert 前 emit 的 EVM events 在 receipt 中被回滚不存在，但 debankBlock 的 error_events 保留了这些 events（inspector 捕获）+ fee log。正确关系：`success_events + revert_fee_events = receipt_logs`。与 reth-x 行为一致。
 
 ---
 
@@ -208,7 +209,7 @@
 | # | 测试项 | 验证内容 | 结果 |
 |---|--------|---------|------|
 | 5.3.1 | event id 算法 | id = MD5(parent_trace_id + pos_in_parent_trace), 手动计算验证 | PASS (expected=actual) |
-| 5.3.2 | id 全局唯一 | 同一区块内所有 event id (events + error_events) 无重复 | 待重测 |
+| 5.3.2 | id 全局唯一 | 同一区块内所有 event id (events + error_events) 无重复 | PASS (25 blocks batch test) |
 
 ### 5.4 idx 全局递增验证
 
@@ -242,8 +243,8 @@
 | 6.6 | traces + error_traces = trace_transaction | per tx: `trace_transaction` 返回条数 = debankBlock 中该 tx 的 traces + error_traces 条数 | PASS (4/4 txs) |
 | 6.7 | events + error_events = receipt logs | per block: `sum(eth_getTransactionReceipt.logs.length)` = debankBlock events + error_events | PASS (5=5) |
 | 6.8 | error 字段非空 | error_traces 中 error 字段 = "Reverted" (非空字符串) | PASS |
-| 6.9 | revert tx with EVM events: fee log 存在 | block 0x99e15c, tx `0x631c...d7bd`: revert 前 emit 6 个 event → 6 个 error_events (EVM) + 1 个 fee error_event (handler)。验证: error_events 中存在 contract_id=`0x20c0...0000` 的 fee Transfer log, 且 error_events 总数 = 6 (EVM) + 1 (fee) = 7。对比: `eth_getTransactionReceipt.logs` 有 1 条 fee log | 待测 |
-| 6.10 | revert tx with EVM events: event 总数一致 | block 0x99e15c: debankBlock error_events 数 = inspector 捕获的 EVM events 数 + receipt fee log 数 | 待测 |
+| 6.9 | revert tx with EVM events: fee log 存在 | block 0x99e15c, tx `0x631c...d7bd`: revert 前 emit 6 个 event → 6 个 error_events (EVM) + 1 个 fee error_event (handler)。验证: error_events 中存在 contract_id=`0x20c0...0000` 的 fee Transfer log, 且 error_events 总数 = 6 (EVM) + 1 (fee) = 7 | PASS (fee_log=1, evm=6, total=7) |
+| 6.10 | revert tx with EVM events: event 总数一致 | block 0x99e15c: debankBlock error_events 数 = inspector 捕获的 EVM events 数 + receipt fee log 数 | PASS (6+1=7) |
 
 ---
 
@@ -371,8 +372,8 @@ RLP 解码验证使用 Python rlp 库，对 block 0x9a1eb0, 0x99b150, 0x0, 0x1 �
 | 11.2 | 空区块 (block 1) | `trace_debankBlock("0x1")` → 仅系统 tx, 无 events, state_diff 全空 | PASS |
 | 11.3 | Fee 区块 (0x9a1eb0) | 检查 events 含 `contract_id` 以 `0x20c0` 开头的 Transfer, storage_contracts 含 FeeManager 地址 | PASS |
 | 11.4 | AA tx 区块 (0x9a1eb0) | AA tx (type=0x76) 的 traces 在 traces 中 (非 error_traces), 基于 `eth_getTransactionReceipt.status=0x1` 分类 | PASS (2 条) |
-| 11.4a | AA tx root trace 分类 | AA tx 的 root trace (`trace_address=[]`) 在 traces 中而非 error_traces 中。验证: debankBlock traces 中存在该 tx 的 `trace_address=[]` 条目 | 待测 |
-| 11.4b | AA tx root events 分类 | AA tx root trace 的直属 events (`parent_trace_id` = root trace id) 在 events 中而非 error_events 中 | 待测 |
+| 11.4a | AA tx root trace 分类 | AA tx 的 root trace (`trace_address=[]`) 在 traces 中而非 error_traces 中。验证: debankBlock traces 中 4 个 root trace, error_traces 中 0 个 | PASS |
+| 11.4b | AA tx root events 分类 | AA tx root trace 的直属 events (`parent_trace_id` = root trace id) 在 events 中 (4 个) 而非 error_events 中 (0 个) | PASS |
 | 11.5 | 多 tx 区块 | 检查 txs[].idx 从 0 递增 | PASS [0,1,2,3] |
 | 11.6 | CREATE 区块 (0x99b150) | traces 含 type="create", 与 `trace_transaction` 对比一致; state_diff.new_codes=1 | PASS |
 | 11.7 | 不存在的区块 | `trace_debankBlock("0xffffff00")` → 返回 JSON-RPC error | PASS ("block not found") |
@@ -390,3 +391,17 @@ RLP 解码验证使用 Python rlp 库，对 block 0x9a1eb0, 0x99b150, 0x0, 0x1 �
 | 12.2 | dry-run | `background-tracer dry-run --rpc-address=... --start-block=X --end-block=X+5` | 未执行 (需 binary) |
 | 12.3 | 连续区块 parent_id 链 | 连续调用 5 个 block (10100400-10100404), 检查每个 block.parent_id = 前一个 block.id | PASS |
 | 12.4 | 性能 | `time curl trace_debankBlock`, 单次调用耗时 | PASS (12ms < 5s) |
+
+---
+
+## 13. 批量回归测试
+
+镜像 `blockchain/tempo:e13d513`，25 个区块批量验证。
+
+| # | 测试项 | 覆盖区块 | 结果 |
+|---|--------|---------|------|
+| 13.1 | tx 数量一致 (debankBlock.txs vs eth_getBlockByNumber.transactions) | 25 blocks | PASS (25/25) |
+| 13.2 | block hash 一致 | 25 blocks | PASS (25/25) |
+| 13.3 | event idx 全局递增无重复 | 25 blocks | PASS (25/25) |
+| 13.4 | trace 数量一致 (per tx, debankBlock vs trace_transaction) | 25 blocks, ~60 txs | PASS |
+| 13.5 | event 数量一致 (success_events + revert_fee_events = receipt_logs) | 25 blocks | PASS (含 2 个 revert+EVM 区块的预期差异) |

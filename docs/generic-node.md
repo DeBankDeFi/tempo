@@ -111,11 +111,11 @@ Revert tx: `ExecutionResult::Revert` 没有 logs 字段。handler 的 fee log �
 
 ## 验证状态
 
-已在 dev 环境 (blockchain-misc-x3, 镜像 `blockchain/tempo:5e3c190`) 完成验证。详见 `docs/test-plan-generic-node.md`，113/119 PASS，6 项待新镜像部署后验证。
+已在 dev 环境 (blockchain-misc-x3, 镜像 `blockchain/tempo:e13d513`) 完成全部验证。详见 `docs/test-plan-generic-node.md`，119/119 PASS + 25 blocks 批量回归 PASS。
 
 | 验证项 | 状态 |
 |--------|------|
-| 字段完整性 (block/txs/traces/events/state_diff/header) | PASS (113/119) |
+| 字段完整性 (block/txs/traces/events/state_diff/header) | PASS (119/119) |
 | traces 与 trace_transaction 逐字段对比 (11 字段 × 21 条) | PASS |
 | events 与 eth_getTransactionReceipt.logs 数量一致 | PASS (含 fee log) |
 | revert tx error_traces/error_events 分类 | PASS |
