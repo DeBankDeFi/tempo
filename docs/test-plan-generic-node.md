@@ -186,8 +186,8 @@
 | 5.1.3 | selector | string(hex, topic[0]) | eth_getTransactionReceipt.logs[].topics[0] | PASS |
 | 5.1.4 | topics | array[string] | eth_getTransactionReceipt.logs[].topics[1:] (不含 topic[0]) | PASS |
 | 5.1.5 | data | string(hex) | eth_getTransactionReceipt.logs[].data | PASS |
-| 5.1.6 | parent_trace_id | string | 无对应 (DeBank 自有字段, 指向产生此 log 的 trace id) | PASS |
-| 5.1.7 | pos_in_parent_trace | number | 无对应 (DeBank 自有字段, 在父 trace children 中的位置) | PASS |
+| 5.1.6 | parent_trace_id | string | 无对应。逻辑验证: 必须指向同区块内真实存在的 trace id (9/9 全部匹配)。EVM 内 event 的 parent trace.to_addr = event.contract_id; fee event 的 parent_trace_id 指向 root trace (handler 层产生, 无对应 EVM call frame) | PASS |
+| 5.1.7 | pos_in_parent_trace | number | 无对应。逻辑验证: 同一 parent 下 positions 无重复且按序排列 | PASS |
 | 5.1.8 | idx | number | 全局 log index, 递增 | PASS |
 
 ### 5.2 event 类型覆盖
