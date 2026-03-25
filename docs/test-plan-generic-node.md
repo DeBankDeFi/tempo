@@ -15,7 +15,7 @@
   - 0x9e8900 (10356992, 含 EIP-1559 tx)
   - 0x0 (genesis), 0x1 (empty)
 
-## 测试结果概要
+# 测试结果概要
 
 | 大类 | 测试点 | 通过 | 失败 | 不适用 |
 |------|--------|------|------|--------|
@@ -396,12 +396,16 @@ RLP 解码验证使用 Python rlp 库，对 block 0x9a1eb0, 0x99b150, 0x0, 0x1 �
 
 ## 13. 批量回归测试
 
-镜像 `blockchain/tempo:e13d513`，25 个区块批量验证。
+镜像 `blockchain/tempo:e13d513`，200 个连续区块批量验证。
 
 | # | 测试项 | 覆盖区块 | 结果 |
 |---|--------|---------|------|
-| 13.1 | tx 数量一致 (debankBlock.txs vs eth_getBlockByNumber.transactions) | 25 blocks | PASS (25/25) |
-| 13.2 | block hash 一致 | 25 blocks | PASS (25/25) |
-| 13.3 | event idx 全局递增无重复 | 25 blocks | PASS (25/25) |
-| 13.4 | trace 数量一致 (per tx, debankBlock vs trace_transaction) | 25 blocks, ~60 txs | PASS |
-| 13.5 | event 数量一致 (success_events + revert_fee_events = receipt_logs) | 25 blocks | PASS (含 2 个 revert+EVM 区块的预期差异) |
+| 13.1 | tx 数量一致 (debankBlock.txs vs eth_getBlockByNumber.transactions) | 200 blocks (10100000-10100199) | PASS (200/200) |
+| 13.2 | block hash 一致 | 200 blocks | PASS (200/200) |
+| 13.3 | event idx 全局递增无重复 | 200 blocks | PASS (200/200) |
+| 13.4 | trace 数量一致 (per tx, debankBlock vs trace_transaction) | 200 blocks, ~500 txs | PASS |
+| 13.5 | event 数量一致 (success_events + revert_tx_receipt_logs = total_receipt_logs) | 200 blocks | PASS |
+
+总计: 1557 项验证, 0 FAIL。
+
+注: event 公式为 `success_events + sum(revert_tx.receipt.logs.length) = total_receipt_logs`。revert tx 的 receipt 只含 fee log（EVM log 被回滚），fee log 可能来自不同 TIP-20 token 地址（0x20C0 前缀 + token 地址后缀，非固定 0x20c0...0000）。
