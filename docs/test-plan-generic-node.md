@@ -26,12 +26,12 @@
 | 6. error_traces/events | 6 | 6 | 0 | 0 |
 | 7. storage_contracts | 3 | 3 | 0 | 0 |
 | 8. state_diff (RLP) | 5 | 5 | 0 | 0 |
-| 9. header | 1 (12 字段) | 1 | 0 | 0 |
+| 9. header | 20 | 20 | 0 | 0 |
 | 10. validation_hash | 3 | 3 | 0 | 0 |
 | 11. 特殊区块 | 7 | 7 | 0 | 0 |
 | 12. 兼容性 | 2 | 2 | 0 | 0 |
 | EIP-1559 覆盖 | 1 | 1 | 0 | 0 |
-| **合计** | **90** | **90** | **0** | **0** |
+| **合计** | **109** | **109** | **0** | **0** |
 
 ### trace 类型覆盖
 
@@ -298,6 +298,8 @@ RLP 解码验证使用 Python rlp 库，对 block 0x9a1eb0, 0x99b150, 0x0, 0x1 �
 
 12 个字段逐一与 eth_getBlockByNumber 对比。
 
+Pipeline Header 定义 20 个字段，全部与 eth_getBlockByNumber 逐一对比。
+
 | # | 测试项 | 验证内容 | 结果 |
 |---|--------|---------|------|
 | 9.1 | hash | 与 eth_getBlockByNumber.hash 一致 | PASS |
@@ -312,6 +314,16 @@ RLP 解码验证使用 Python rlp 库，对 block 0x9a1eb0, 0x99b150, 0x0, 0x1 �
 | 9.10 | baseFeePerGas | 一致 | PASS |
 | 9.11 | miner | 一致 | PASS |
 | 9.12 | logsBloom | 一致 | PASS |
+| 9.13 | nonce | 一致 (0x0000000000000000) | PASS |
+| 9.14 | mixHash | 一致 (0x0000...0000) | PASS |
+| 9.15 | sha3Uncles | 一致 (0x1dcc...9347) | PASS |
+| 9.16 | difficulty | 一致 (0x0) | PASS |
+| 9.17 | extraData | 一致 (0x) | PASS |
+| 9.18 | withdrawalsRoot | 一致 (0x56e8...b421) | PASS |
+| 9.19 | blobGasUsed | 一致 (0x0) | PASS |
+| 9.20 | excessBlobGas | 一致 (0x0) | PASS |
+
+注: `requestsHash` (alloy) vs `requestsRoot` (pipeline Go) JSON key 名不同，为 reth 系通用差异，所有消费方均不使用该字段。
 
 ---
 
