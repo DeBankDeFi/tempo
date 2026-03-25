@@ -25,14 +25,14 @@
 | 4. traces | 10 | 10 | 0 | 0 |
 | 5. events | 10 | 10 | 0 | 0 |
 | 6. error_traces/events | 10 | 10 | 0 | 0 |
-| 7. storage_contracts | 3 | 3 | 0 | 0 |
-| 8. state_diff (RLP) | 5 | 5 | 0 | 0 |
+| 7. storage_contracts | 5 | 5 | 0 | 0 |
+| 8. state_diff (RLP) | 16 | 15 | 0 | 1 (selfdestruct 未覆盖) |
 | 9. header | 20 | 20 | 0 | 0 |
-| 10. validation_hash | 3 | 3 | 0 | 0 |
+| 10. validation_hash | 4 | 3 | 0 | 1 (算法验证未执行) |
 | 11. 特殊区块 | 10 | 10 | 0 | 0 |
-| 12. 兼容性 | 2 | 2 | 0 | 0 |
+| 12. 兼容性 | 4 | 2 | 0 | 2 (dry-run 未执行) |
 | EIP-1559 覆盖 | 1 | 1 | 0 | 0 |
-| **合计** | **119** | **119** | **0** | **0** |
+| **合计** | **136** | **132** | **0** | **4 (selfdestruct/算法验证/dry-run×2)** |
 
 ### trace 类型覆盖
 
@@ -154,7 +154,7 @@
 |---|--------|---------|------|
 | 4.2.1 | call 类型 | type="call", call_type="call" | PASS (block 0x9a1eb0, 7 条) |
 | 4.2.2 | delegatecall 类型 | type="call", call_type="delegatecall" | PASS (block 0x9a1eb0, 1 条) |
-| 4.2.3 | staticcall 类型 | type="call", call_type="staticcall" | 未覆盖 (Tempo 链上未发现) |
+| 4.2.3 | staticcall 类型 | type="call", call_type="staticcall" | PASS (block 0x99e15c, 与 trace_transaction 一致) |
 | 4.2.4 | create 类型 | type="create", call_type="", to_addr=创建的合约地址 | PASS (block 0x99b150, to_addr=0x28fc...f816) |
 | 4.2.5 | 深层嵌套 | trace_address 多层 (如 [0,0,0,0,0]) | PASS (max depth=5) |
 | 4.2.6 | storage_change 传播 | 子 trace 有 SSTORE, 父 trace.storage_change=true | PASS |
@@ -241,7 +241,7 @@
 | 6.4 | error_traces 字段完整 | jq 检查 error_traces[0] 与 traces[0] 字段结构一致 (18 个字段) | PASS |
 | 6.5 | error_events 字段完整 | jq 检查 error_events[0] 与 events[0] 字段结构一致 (8 个字段) | PASS |
 | 6.6 | traces + error_traces = trace_transaction | per tx: `trace_transaction` 返回条数 = debankBlock 中该 tx 的 traces + error_traces 条数 | PASS (4/4 txs) |
-| 6.7 | events + error_events = receipt logs | per block: `sum(eth_getTransactionReceipt.logs.length)` = debankBlock events + error_events | PASS (5=5) |
+| 6.7 | events + error_events = receipt logs | 无 revert+EVM 区块: `sum(receipt.logs.length)` = events + error_events。有 revert+EVM 区块: `success_events + revert_tx_receipt_logs = total_receipt_logs`（见已知差异 #2） | PASS (block 0x9a2040: 5=5, 200 blocks batch 验证) |
 | 6.8 | error 字段非空 | error_traces 中 error 字段 = "Reverted" (非空字符串) | PASS |
 | 6.9 | revert tx with EVM events: fee log 存在 | block 0x99e15c, tx `0x631c...d7bd`: revert 前 emit 6 个 event → 6 个 error_events (EVM) + 1 个 fee error_event (handler)。验证: error_events 中存在 contract_id=`0x20c0...0000` 的 fee Transfer log, 且 error_events 总数 = 6 (EVM) + 1 (fee) = 7 | PASS (fee_log=1, evm=6, total=7) |
 | 6.10 | revert tx with EVM events: event 总数一致 | block 0x99e15c: debankBlock error_events 数 = inspector 捕获的 EVM events 数 + receipt fee log 数 | PASS (6+1=7) |
@@ -356,9 +356,9 @@ RLP 解码验证使用 Python rlp 库，对 block 0x9a1eb0, 0x99b150, 0x0, 0x1 �
 | # | 测试项 | 验证方法 | 结果 |
 |---|--------|---------|------|
 | 10.1 | 类型 | jq `type == "number"` | PASS |
-| 10.2 | 非零 | jq `!= 0`, 值=144697 | PASS |
+| 10.2 | 非零 | jq `!= 0`, 值=205047 | PASS |
 | 10.3 | 算法验证 | SHA1(所有 id 拼接) 取末 6 位 — 算法已在 Rust 代码和 Go pipeline 代码中一致实现 | 未执行 (代码级验证) |
-| 10.4 | 幂等 | 同一 block_id 两次调用 `trace_debankBlock`, 对比 validation_hash 值 | PASS (144697=144697) |
+| 10.4 | 幂等 | 同一 block_id 两次调用 `trace_debankBlock`, 对比 validation_hash 值 | PASS (205047=205047) |
 
 ---
 
