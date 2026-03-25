@@ -64,6 +64,22 @@ background-tracer (已有 sidecar)
 
 这与 `pre_traceMany` 不同 — pre_traceMany 走 `prepare_call_env` → `inspect()` 路径（eth_call 模式），handler 的 fee 逻辑被跳过。
 
+**AA tx (type=0x76) 的 DebankTransaction 字段来源**:
+
+`to_addr` 和 `input` 对 AA tx 与普通 tx 表现不同：
+
+| 字段 | 来源 | 普通 tx | AA tx (0x76) |
+|------|------|--------|-------------|
+| to_addr | `ReceiptResponse::to()` | tx.to = 合约地址 | receipt.to = 解包后的实际调用目标 |
+| input | `Transaction::input()` | tx.input = call data | TempoTxEnvelope trait 返回 AA 内部调用数据（非信封 payload） |
+
+`eth_getBlockByNumber` 返回 AA 信封层原始数据（to=null, input=短 AA payload），而 debankBlock 返回解包后的业务数据。这是 Tempo 的 `Transaction` trait 实现决定的行为（reth-x 无 AA tx，不存在此差异）。DeBankCore 需要解包后的数据，当前行为正确。
+
+**Revert tx 的 fee log 获取**:
+
+成功 tx: fee log 在 `ExecutionResult::Success { logs }` 中，直接可得。
+Revert tx: `ExecutionResult::Revert` 没有 logs 字段。handler 的 fee log 存在 `TempoEvm.logs` 中，但 `inspect()` 后 EVM 被丢弃。实际通过 `eth_getTransactionReceipt`（已存储的 receipt）的 logs 补回，使用 `serde_json::from_value::<Vec<alloy_rpc_types_eth::Log>>` 反序列化。
+
 **与 reth-x 的差异**:
 | 项 | reth-x | Tempo |
 |---|--------|-------|
