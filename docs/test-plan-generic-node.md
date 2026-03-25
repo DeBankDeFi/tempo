@@ -56,7 +56,7 @@
 | 1.1 | 返回结构完整性 | block_file/header/state_diff/validation_hash 四个字段均存在且非 null | PASS |
 | 1.2 | validation_hash 类型 | number 类型, 非零 | PASS |
 | 1.3 | state_diff 格式 | hex string, 以 0x 开头, RLP 可解码 | PASS |
-| 1.4 | header 与 eth_getBlockByNumber 一致 | hash/stateRoot/transactionsRoot/receiptsRoot/gasUsed/number/timestamp 逐字段对比 | PASS (7/7) |
+| 1.4 | header 与 eth_getBlockByNumber 一致 | 7 个字段 (hash/stateRoot/transactionsRoot/receiptsRoot/gasUsed/number/timestamp) 与 eth_getBlockByNumber 返回值逐一对比 | PASS (7/7) |
 
 ---
 
@@ -177,15 +177,17 @@
 
 ### 5.1 字段类型验证
 
-| # | 字段 | 类型 | 验证方式 | 结果 |
-|---|------|------|---------|------|
-| 5.1.1 | id | string(MD5 hex, 32 chars) | 非空, 唯一 | PASS |
-| 5.1.2 | contract_id | string(address) | 与 receipt.logs[].address 一致 | PASS |
-| 5.1.3 | selector | string(hex, topic[0]) | 与 receipt.logs[].topics[0] 一致 | PASS |
-| 5.1.4 | topics | array[string] | receipt.logs[].topics[1:] (不含 topic[0]) | PASS |
-| 5.1.5 | data | string(hex) | 与 receipt.logs[].data 一致 | PASS |
-| 5.1.6 | parent_trace_id | string | 指向产生此 log 的 trace id | PASS |
-| 5.1.7 | pos_in_parent_trace | number | 在父 trace children 中的位置 | PASS |
+对比来源: `eth_getTransactionReceipt` 返回的 `logs[]` 数组 (简写 receipt.logs)。
+
+| # | 字段 | 类型 | 对比 API 和字段 | 结果 |
+|---|------|------|---------------|------|
+| 5.1.1 | id | string(MD5 hex, 32 chars) | 无对应 (DeBank 自有字段, MD5 算法验证) | PASS |
+| 5.1.2 | contract_id | string(address) | eth_getTransactionReceipt.logs[].address | PASS |
+| 5.1.3 | selector | string(hex, topic[0]) | eth_getTransactionReceipt.logs[].topics[0] | PASS |
+| 5.1.4 | topics | array[string] | eth_getTransactionReceipt.logs[].topics[1:] (不含 topic[0]) | PASS |
+| 5.1.5 | data | string(hex) | eth_getTransactionReceipt.logs[].data | PASS |
+| 5.1.6 | parent_trace_id | string | 无对应 (DeBank 自有字段, 指向产生此 log 的 trace id) | PASS |
+| 5.1.7 | pos_in_parent_trace | number | 无对应 (DeBank 自有字段, 在父 trace children 中的位置) | PASS |
 | 5.1.8 | idx | number | 全局 log index, 递增 | PASS |
 
 ### 5.2 event 类型覆盖
@@ -194,9 +196,9 @@
 |---|--------|---------|------|
 | 5.2.1 | Transfer event | selector=0xddf252ad..., topics 含 from/to | PASS |
 | 5.2.2 | 多 topic event | topics 数组长度 > 0 | PASS |
-| 5.2.3 | 无 topic event (anonymous) | selector="", topics=[] | 未覆盖 (未找到) |
+| 5.2.3 | 无 topic event (anonymous) | selector="", topics=[] | 未覆盖 (链上未找到) |
 | 5.2.4 | fee Transfer log | contract_id 为 TIP-20 地址(0x20c0...), selector=Transfer | PASS |
-| 5.2.5 | EVM 内 log + fee log | events 总数 = receipt logs 总数 | PASS (9=9, 5=5) |
+| 5.2.5 | events 总数 = eth_getTransactionReceipt logs 总数 | 含 EVM 内 log + handler fee log, per block 验证 | PASS (block 0x9a1eb0: 9=9, block 0x9a2040: 5=5) |
 
 ### 5.3 ID 计算验证
 
@@ -218,8 +220,8 @@
 | 6.3 | 成功 tx 不进 error | status=0x1 的 tx (含 AA), error_traces/error_events=0 | PASS |
 | 6.4 | error_traces 字段完整 | 与 traces 相同的字段结构 | PASS |
 | 6.5 | error_events 字段完整 | 与 events 相同的字段结构 | PASS |
-| 6.6 | traces + error_traces = trace_transaction | per tx 验证 (block 0x9a2040, 4 txs) | PASS (4/4) |
-| 6.7 | events + error_events = receipt logs | per tx 验证 | PASS (5=5) |
+| 6.6 | traces + error_traces = trace_transaction 总数 | per tx 对比 trace_transaction 返回的 trace 条数 | PASS (4/4) |
+| 6.7 | events + error_events = eth_getTransactionReceipt logs 总数 | per tx 对比 receipt.logs 条数 | PASS (5=5) |
 | 6.8 | error 字段非空 | error_traces 中的 trace: error="Reverted" | PASS |
 
 ---
@@ -245,8 +247,8 @@ RLP 解码验证使用 Python rlp 库，对 block 0x9a1eb0, 0x99b150, 0x0, 0x1 �
 | # | 测试项 | 验证内容 | 结果 |
 |---|--------|---------|------|
 | 8.1.1 | RLP 可解码 | hex → bytes → RLP decode 成功 | PASS (4 个区块) |
-| 8.1.2 | hash | 与 header.stateRoot 一致 | PASS |
-| 8.1.3 | parent_hash | 与 parent block 的 stateRoot 一致 | PASS |
+| 8.1.2 | hash | 与 debankBlock.header.stateRoot 一致 | PASS |
+| 8.1.3 | parent_hash | 与 eth_getBlockByNumber(parent).stateRoot 一致 | PASS |
 
 ### 8.2 new_accounts
 
