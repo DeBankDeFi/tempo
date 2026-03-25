@@ -80,23 +80,27 @@
 
 ### 3.1 字段类型验证
 
-已对 4 笔 tx (block 0x9a1eb0) 逐字段与 receipt/eth_getBlockByNumber 对比，8 字段 × 4 tx = 32 项全部 PASS。
+已对 4 笔 tx (block 0x9a1eb0) 逐字段对比，8 字段 × 4 tx = 32 项全部 PASS。
 
-| # | 字段 | 类型 | 验证方式 | 结果 |
-|---|------|------|---------|------|
-| 3.1.1 | id | string | 与 receipt.transactionHash 一致 | PASS (4/4) |
-| 3.1.2 | from_addr | string(address) | 与 receipt.from 一致 | PASS (4/4) |
-| 3.1.3 | to_addr | string(address) | 与 tx.to 或 Address::ZERO (创建合约时) 一致 | PASS (4/4) |
-| 3.1.4 | gas_limit | number | 与 tx.gas 一致 | PASS (4/4) |
-| 3.1.5 | gas_price | number | 与 receipt.effectiveGasPrice 一致 | PASS (4/4) |
-| 3.1.6 | gas_used | number | 与 receipt.gasUsed 一致 | PASS (4/4) |
-| 3.1.7 | status | boolean | 与 receipt.status 一致 (true=0x1, false=0x0) | PASS (4/4) |
-| 3.1.8 | max_fee_per_gas | number | 与 tx.maxFeePerGas 一致 | PASS |
-| 3.1.9 | max_priority_fee_per_gas | number | 与 tx.maxPriorityFeePerGas 一致 | PASS |
-| 3.1.10 | input | string(hex) | 与 tx.input 一致 | PASS |
-| 3.1.11 | nonce | number | 与 tx.nonce 一致 | PASS (4/4) |
-| 3.1.12 | idx | number | 从 0 递增, 与 receipt.transactionIndex 一致 | PASS (4/4) |
-| 3.1.13 | value | string(hex U256) | 与 tx.value 一致 | PASS |
+对比来源：
+- `eth_getTransactionReceipt` (简写 receipt): id, from_addr, gas_price, gas_used, status, idx
+- `eth_getBlockByNumber(block, true)` 的 transactions 数组 (简写 tx): to_addr, gas_limit, nonce, input, value, max_fee_per_gas, max_priority_fee_per_gas
+
+| # | 字段 | 类型 | 对比 API 和字段 | 结果 |
+|---|------|------|---------------|------|
+| 3.1.1 | id | string | receipt.transactionHash | PASS (4/4) |
+| 3.1.2 | from_addr | string(address) | receipt.from | PASS (4/4) |
+| 3.1.3 | to_addr | string(address) | tx.to (AA tx 取 receipt.to) | PASS (4/4) |
+| 3.1.4 | gas_limit | number | tx.gas | PASS (4/4) |
+| 3.1.5 | gas_price | number | receipt.effectiveGasPrice | PASS (4/4) |
+| 3.1.6 | gas_used | number | receipt.gasUsed | PASS (4/4) |
+| 3.1.7 | status | boolean | receipt.status (0x1→true, 0x0→false) | PASS (4/4) |
+| 3.1.8 | max_fee_per_gas | number | tx.maxFeePerGas | PASS |
+| 3.1.9 | max_priority_fee_per_gas | number | tx.maxPriorityFeePerGas | PASS |
+| 3.1.10 | input | string(hex) | tx.input | PASS |
+| 3.1.11 | nonce | number | tx.nonce | PASS (4/4) |
+| 3.1.12 | idx | number | receipt.transactionIndex, 从 0 递增 | PASS (4/4) |
+| 3.1.13 | value | string(hex U256) | tx.value | PASS |
 
 ### 3.2 tx 类型覆盖
 
