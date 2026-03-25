@@ -240,7 +240,7 @@ where
                     let mut trace_cfg = TracingInspectorConfig::default_parity()
                         .set_steps(true)
                         .set_record_logs(true)
-                        .set_exclude_precompile_calls(false);
+                        .set_exclude_precompile_calls(true);
                     trace_cfg.record_opcodes_filter =
                         Some(OpcodeFilter::new().enabled(OpCode::SSTORE));
                     let mut inspector = TracingInspector::new(trace_cfg);
