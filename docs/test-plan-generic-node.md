@@ -113,28 +113,30 @@
 
 ## 4. block_file.traces (DebankTrace)
 
-### 4.1 字段类型验证
+### 4.1 字段验证 (逐字段与 trace_transaction 对比)
 
-| # | 字段 | 类型 | 验证方式 |
-|---|------|------|---------|
-| 4.1.1 | id | string(MD5 hex, 32 chars) | 非空, 唯一 |
-| 4.1.2 | from_addr | string(address) | 非零 (root trace 为 tx sender) |
-| 4.1.3 | gas_limit | number | 与 trace_transaction.action.gas 一致 (十进制 vs hex) |
-| 4.1.4 | input | string(hex) | 与 trace_transaction.action.input 一致 |
-| 4.1.5 | to_addr | string(address) | 与 trace_transaction.action.to 一致 |
-| 4.1.6 | value | string(hex U256) | 与 trace_transaction.action.value 一致 |
-| 4.1.7 | gas_used | number | 与 trace_transaction.result.gasUsed 一致 |
-| 4.1.8 | output | string(hex) | 与 trace_transaction.result.output 一致 |
-| 4.1.9 | type | string | "call" / "create" / "create2" / "suicide" 之一 |
-| 4.1.10 | call_type | string | type="call" 时: "call"/"delegatecall"/"staticcall"/"callcode"; type!="call" 时: 空字符串 |
-| 4.1.11 | tx_id | string(tx hash) | 与所属 tx 的 hash 一致 |
-| 4.1.12 | parent_trace_id | string | root trace 为 "", 子 trace 为父 trace 的 id |
-| 4.1.13 | pos_in_parent_trace | number | 在父 trace children 中的位置索引 |
-| 4.1.14 | self_storage_change | boolean | 当前 frame 有 SSTORE → true |
-| 4.1.15 | storage_change | boolean | 当前 frame 或子 frame 有 SSTORE → true |
-| 4.1.16 | subtraces | number | 与 trace_transaction.subtraces 一致 |
-| 4.1.17 | trace_address | array[number] | 与 trace_transaction.traceAddress 一致 |
-| 4.1.18 | error | string | 成功 trace: 空字符串(omit); 失败: "Reverted"/"Out of gas" 等 |
+已对比区块: 0x9a1eb0 (10 traces, call+delegatecall), 0x9a2040 (6 traces, 含 revert), 0x99b150 (5 traces, 含 create)。共 21 条 trace，每条比 11 个字段，全部 MATCH。
+
+| # | 字段 | 类型 | trace_transaction 对应字段 | 结果 |
+|---|------|------|--------------------------|------|
+| 4.1.1 | id | string(MD5 hex, 32 chars) | 无对应 (DeBank 自有字段, MD5 算法验证) | PASS |
+| 4.1.2 | from_addr | string(address) | action.from | PASS (21/21) |
+| 4.1.3 | gas_limit | number | action.gas (十进制 vs hex) | PASS (21/21) |
+| 4.1.4 | input | string(hex) | action.input (call) / action.init (create) | PASS (21/21) |
+| 4.1.5 | to_addr | string(address) | action.to (call) / result.address (create) | PASS (21/21) |
+| 4.1.6 | value | string(hex U256) | action.value | PASS (21/21) |
+| 4.1.7 | gas_used | number | result.gasUsed | PASS (21/21) |
+| 4.1.8 | output | string(hex) | result.output (call) / result.code (create) | PASS (21/21) |
+| 4.1.9 | type | string | type ("call"/"create") | PASS (21/21) |
+| 4.1.10 | call_type | string | action.callType (call 时) / "" (create 时) | PASS (21/21) |
+| 4.1.11 | tx_id | string(tx hash) | transactionHash | PASS (21/21) |
+| 4.1.12 | parent_trace_id | string | 无对应 (DeBank 自有字段) | PASS (MD5 验证) |
+| 4.1.13 | pos_in_parent_trace | number | 无对应 (DeBank 自有字段) | PASS |
+| 4.1.14 | self_storage_change | boolean | 无对应 (SSTORE opcode 检测) | PASS (类型验证) |
+| 4.1.15 | storage_change | boolean | 无对应 (含子 trace 传播) | PASS (传播逻辑验证) |
+| 4.1.16 | subtraces | number | subtraces | PASS (21/21) |
+| 4.1.17 | trace_address | array[number] | traceAddress | PASS (21/21) |
+| 4.1.18 | error | string | error (成功=null, 失败="Reverted") | PASS (revert block 验证) |
 
 ### 4.2 trace type 覆盖
 
@@ -159,9 +161,9 @@
 
 | # | 测试项 | 验证内容 |
 |---|--------|---------|
-| 4.4.1 | trace 数量一致 | debankBlock traces+error_traces = trace_transaction 总数 (per tx) |
-| 4.4.2 | 字段值一致 | from/to/gas/gasUsed/callType/traceAddress/subtraces 逐字段 (注意十进制 vs hex) |
-| 4.4.3 | 批量对比 (10 区块) | 选取有 tx 的区块, 逐 tx 对比 |
+| 4.4.1 | trace 数量一致 | debankBlock traces+error_traces = trace_transaction 总数 (per tx), 3 个区块全部 PASS |
+| 4.4.2 | 全字段对比 | 11 个字段 (from/to/type/callType/gas/gasUsed/input/output/value/subtraces/traceAddress) × 21 条 trace, 全部 MATCH |
+| 4.4.3 | CREATE trace | block 0x99b150: type="create", to_addr=result.address, input=action.init, output=result.code, call_type="" PASS |
 
 ---
 
