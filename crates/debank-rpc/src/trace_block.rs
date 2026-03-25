@@ -183,23 +183,10 @@ where
             ..Default::default()
         };
 
-        // Empty block shortcut
-        if parent_block.state_root() == block.state_root() {
-            let state_diff = BlockStorageDiff {
-                hash: block.state_root(),
-                parent_hash: parent_block.state_root(),
-                ..Default::default()
-            };
-            let validation_hash = block_file.validation().validation_hash;
-            return Ok(DebankOutPut {
-                block_file,
-                header: debank_header,
-                state_diff: alloy_rlp::encode(state_diff).into(),
-                validation_hash,
-            });
-        }
-
         // Prepare block replay
+        // No empty block shortcut: Tempo has a system tx in every block
+        // (subblock metadata, gas=0) that doesn't change state but has a
+        // trace in trace_transaction. Always replay to stay consistent.
         let block_state_root = block.state_root();
         let parent_state_root = parent_block.state_root();
 
