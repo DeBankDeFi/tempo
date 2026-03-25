@@ -218,7 +218,7 @@ where
                 let mut diff_db = StateDiffTraceDB::new(cache_db);
 
                 let log_index = std::cell::RefCell::new(0usize);
-                // (traces, error_traces, events, error_events, exec_log_count)
+                // (traces, error_traces, events, error_events, receipt_log_count)
                 let mut all_results: Vec<(Vec<DebankTrace>, Vec<DebankTrace>, Vec<DebankEvent>, Vec<DebankEvent>, usize)> = Vec::new();
 
                 for (idx, tx) in block.transactions_recovered().enumerate() {
@@ -263,10 +263,11 @@ where
 
                     all_results.push((traces, error_traces, events, error_events, receipt_log_count));
 
-                    // Determine fee log source: exec_logs for success, receipt for revert
+                    // Determine fee log source: exec_logs for success, receipt for revert.
+                    // Use block-global log_index for idx (not tx-local offset).
                     let extra_log_source: Vec<DebankEvent> = if exec_logs.len() > evm_event_count {
                         // Success path: use exec_logs
-                        exec_logs[evm_event_count..].iter().enumerate().map(|(i, log)| {
+                        exec_logs[evm_event_count..].iter().map(|log| {
                             let selector = log.topics().first()
                                 .map(|h| h.to_string()).unwrap_or_default();
                             let topics = if log.topics().len() > 1 {
@@ -274,24 +275,28 @@ where
                             } else {
                                 vec![]
                             };
+                            let current_idx = *log_index.borrow();
+                            *log_index.borrow_mut() += 1;
                             DebankEvent {
                                 contract_id: log.address,
                                 selector,
                                 topics,
                                 data: log.data.data.clone(),
-                                idx: evm_event_count + i,
+                                idx: current_idx,
                                 ..Default::default()
                             }
                         }).collect()
                     } else if receipt_log_count > evm_event_count {
                         // Revert path: use receipt logs
-                        receipt_logs_per_tx[idx][evm_event_count..].iter().enumerate().map(|(i, rl)| {
+                        receipt_logs_per_tx[idx][evm_event_count..].iter().map(|rl| {
+                            let current_idx = *log_index.borrow();
+                            *log_index.borrow_mut() += 1;
                             DebankEvent {
                                 contract_id: rl.contract_id,
                                 selector: rl.selector.clone(),
                                 topics: rl.topics.clone(),
                                 data: rl.data.clone(),
-                                idx: evm_event_count + i,
+                                idx: current_idx,
                                 ..Default::default()
                             }
                         }).collect()

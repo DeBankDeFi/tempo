@@ -497,58 +497,6 @@ pub fn get_storage_contracts_from_cache(cache: &Cache) -> Vec<Address> {
         .collect()
 }
 
-/// Extract state diffs without a pre-state database (includes all deployed code).
-pub fn get_storage_diffs_from_cache_no_pre(cache: Cache) -> BlockStorageDiff {
-    let mut new_accounts = Vec::new();
-    let mut deleted_accounts = Vec::new();
-    let mut storage_diffs = Vec::new();
-    let mut new_codes = Vec::new();
-
-    for (address, db_account) in cache.accounts {
-        if db_account.account_state == AccountState::NotExisting {
-            deleted_accounts.push(keccak256(address.0));
-            continue;
-        }
-
-        new_accounts.push(NewAccount {
-            address: keccak256(address.0),
-            balance: db_account.info.balance,
-            nonce: db_account.info.nonce,
-            code_hash: db_account.info.code_hash,
-        });
-
-        if !db_account.storage.is_empty() {
-            let diffs: Vec<IndexValuePair> = db_account
-                .storage
-                .into_iter()
-                .map(|(key, value)| IndexValuePair {
-                    index: keccak256::<[u8; 32]>(key.to_be_bytes()),
-                    value,
-                })
-                .collect();
-            if !diffs.is_empty() {
-                storage_diffs
-                    .push(AccountStorageDiff { address: keccak256(address.0), diffs });
-            }
-        }
-
-        if let Some(code) = db_account.info.code {
-            let code_hash = db_account.info.code_hash;
-            if code_hash != KECCAK_EMPTY {
-                new_codes.push(NewCode { code_hash, code: code.original_bytes() });
-            }
-        }
-    }
-
-    BlockStorageDiff {
-        hash: H256::ZERO,
-        parent_hash: H256::ZERO,
-        new_accounts,
-        deleted_accounts,
-        storage_diffs,
-        new_codes,
-    }
-}
 
 pub fn get_storage_diffs_from_cache<DB: DatabaseRef>(cache: Cache, pre_db: DB) -> BlockStorageDiff {
     let mut new_accounts = Vec::new();
