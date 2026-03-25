@@ -80,54 +80,61 @@ background-tracer (已有 sidecar)
 成功 tx: fee log 在 `ExecutionResult::Success { logs }` 中，直接可得。
 Revert tx: `ExecutionResult::Revert` 没有 logs 字段。handler 的 fee log 存在 `TempoEvm.logs` 中，但 `inspect()` 后 EVM 被丢弃。实际通过 `eth_getTransactionReceipt`（已存储的 receipt）的 logs 补回，使用 `serde_json::from_value::<Vec<alloy_rpc_types_eth::Log>>` 反序列化。
 
+**trace/event 分类: 基于 receipt status**:
+
+`build_debank_traces()` 内部按 `CallTraceNode.trace.success` 分类 traces/events 到 success 或 error 列表。但 AA tx (0x76) 的根 trace 是 handler 包装的系统调用 (from=0x0, to=0x0)，`CallTraceArena` 可能标记其 `success=false`，即使 tx 实际成功 (receipt status=0x1)。
+
+修复: 在组装 block_file 时，以 `eth_getTransactionReceipt.status` 作为最终分类依据。status=0x1 的 tx，所有 traces/events 归入 success 列表；status=0x0 的归入 error 列表。
+
 **与 reth-x 的差异**:
+
 | 项 | reth-x | Tempo |
 |---|--------|-------|
 | 区块重放 | `EvmFactory::create_tracer().try_trace_many()` | 手动循环 + `inspect()` + `commit()` |
 | 错误处理 | iterator 返回 None 停止 | `?` 直接返回错误（一致） |
 | pre_db | 两次 `state_at_block_id` | 同上（一致） |
 | fee 处理 | 标准以太坊（无特殊） | TempoEvmHandler 自动处理 TIP-20 fee |
+| revert tx fee log | 无此问题 | 从 receipt serde 反序列化补回 |
+| trace 分类 | CallTraceArena success 标志 | receipt status 最终决定 |
+| AA tx | 无 | to_addr/input 来自解包后数据 |
 | deposit_nonce | OP Stack 支持 | 不需要（非 OP Stack） |
 
-## 待验证
+**与 pipeline Go 版的字段兼容性**:
 
-部署后需验证：
+逐字段递归对比 pipeline (`/chaintable/pipeline/types/`) 与 Tempo 实现，结论:
+- JSON 字段名: 全部一致（除 Header 的 `requestsHash` vs `requestsRoot`，reth 系通用差异，消费方不使用）
+- 字段数量: 全部一致（BlockValidation 的 count 字段由 background-tracer 独立计算，不在 RPC 返回中）
+- 数值类型: Go `*big.Int` vs Rust `u64`/`u128`，JSON 序列化结果一致
 
-### 1. 基础调用
-```bash
-curl -X POST -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"trace_debankBlock","params":["0x9a1eb0"],"id":1}' \
-  http://data.tempo.blockchain
-```
+## 验证状态
 
-### 2. 字段完整性
-- `block_file.block`: id/height/parent_id/timestamp
-- `block_file.txs`: 数量 = eth_getBlockByNumber 的 tx 数
-- `block_file.traces`: 与 trace_transaction 一致
-- `block_file.events`: 数量 = receipt 总 logs 数（含 fee log）
-- `state_diff`: RLP 可解码，new_accounts/storage_diffs 非空
-- `validation_hash`: 非零
+已在 dev 环境 (blockchain-misc-x3, 镜像 `blockchain/tempo:5e3c190`) 完成全部验证。详见 `docs/test-plan-generic-node.md`，109/109 PASS。
 
-### 3. Fee log 验证
-对同一 tx，`trace_debankBlock` 输出的 events 数量应等于 `eth_getTransactionReceipt` 的 logs 数量（含 handler 层 fee Transfer log）。
+| 验证项 | 状态 |
+|--------|------|
+| 字段完整性 (block/txs/traces/events/state_diff/header) | PASS (109 字段) |
+| traces 与 trace_transaction 逐字段对比 (11 字段 × 21 条) | PASS |
+| events 与 eth_getTransactionReceipt.logs 数量一致 | PASS (含 fee log) |
+| revert tx error_traces/error_events 分类 | PASS |
+| state_diff RLP 解码 (hash/parent_hash/new_accounts/storage_diffs/new_codes) | PASS |
+| genesis/空块/CREATE 块/AA tx 块/最新块 | PASS |
+| 性能 (单次调用 12ms) | PASS |
+| background-tracer dry-run | 未执行 (需 binary 部署) |
 
-### 4. State diff 精确性
-对比 `trace_debankBlock` 的 state_diff 中 new_codes 数量，确认只包含本 block 新部署的代码（不含已有代码）。
+## 部署
 
-### 5. background-tracer 集成
-```bash
-background-tracer dry-run \
-  --rpc-address=http://data.tempo.blockchain \
-  --start-block=10000000 --end-block=10000005 \
-  --max-task=1 --chain-id=4217 \
-  --region=ap-northeast-1 \
-  --nodex-bucket=test --chain-table-bucket=test
-```
+### Dev 环境 (已完成)
 
-## 部署步骤
+- 机器: blockchain-misc-x3
+- 数据: `/data/tempo/` (snapshot 导入, 20G)
+- 镜像: `blockchain/tempo:5e3c190` (CI 自动构建)
+- 端口: 8566 (HTTP RPC)
+- docker-compose: `/data/tempo/docker-compose.yml`
 
-1. 在 blockchain-misc-x3 编译 `cargo build --release`
-2. 构建镜像推送 ECR
-3. 更新线上 docker compose 使用新镜像
+### 生产部署步骤
+
+1. 合并 `feature/debank_rpc` → `debank` 分支
+2. 创建 release tag → CI 构建镜像 (amd64 + arm64)
+3. 更新线上 2 台机器 docker compose (172.22.141.54 / 172.22.179.114)
 4. 验证 `trace_debankBlock` RPC 可用
-5. 部署 background-tracer sidecar（配置 Kafka/S3 + chain_id=4217）
+5. 部署 background-tracer sidecar (配置 Kafka/S3 + chain_id=4217)
