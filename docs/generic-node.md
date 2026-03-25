@@ -99,7 +99,7 @@ Revert tx: `ExecutionResult::Revert` 没有 logs 字段。handler 的 fee log �
 | revert tx fee log | 无此问题 | 从 receipt serde 反序列化补回 |
 | trace 分类 | CallTraceArena success 标志 | receipt status 最终决定 |
 | AA tx | 无 | to_addr/input 来自解包后数据 |
-| exclude_precompile_calls | `false`（完整调用链） | `true`（与 trace_transaction 一致）⚠️ 待讨论 |
+| exclude_precompile_calls | `false` | `true`（Tempo 自定义预编译不在 warm_addresses 中，不受影响） |
 | deposit_nonce | OP Stack 支持 | 不需要（非 OP Stack） |
 
 **与 pipeline Go 版的字段兼容性**:
@@ -111,18 +111,22 @@ Revert tx: `ExecutionResult::Revert` 没有 logs 字段。handler 的 fee log �
 
 ## 验证状态
 
-已在 dev 环境 (blockchain-misc-x3, 镜像 `blockchain/tempo:e13d513`) 完成全部验证。详见 `docs/test-plan-generic-node.md`，119/119 PASS + 25 blocks 批量回归 PASS。
+已在 dev 环境 (blockchain-misc-x3, 镜像 `blockchain/tempo:e13d513`) 完成全部验证。详见 `docs/test-plan-generic-node.md`，136 项测试 132 PASS + 200 blocks 批量回归 (1557 tests, 0 FAIL)。
 
 | 验证项 | 状态 |
 |--------|------|
-| 字段完整性 (block/txs/traces/events/state_diff/header) | PASS (119/119) |
+| 字段完整性 (block/txs/traces/events/state_diff/header) | PASS (132/136) |
 | traces 与 trace_transaction 逐字段对比 (11 字段 × 21 条) | PASS |
 | events 与 eth_getTransactionReceipt.logs 数量一致 | PASS (含 fee log) |
+| revert tx with EVM events: fee log 捕获 (CR #2) | PASS (block 0x99e15c) |
 | revert tx error_traces/error_events 分类 | PASS |
+| AA tx trace 分类: root-trace 检测 (CR #3) | PASS |
+| event idx 全局递增无重复 (CR #4) | PASS (200 blocks) |
 | state_diff RLP 解码 (hash/parent_hash/new_accounts/storage_diffs/new_codes) | PASS |
 | genesis/空块/CREATE 块/AA tx 块/最新块 | PASS |
+| Receipt converter 回归 (CR #8) | PASS (dev vs prod `eth_getTransactionReceipt` 输出 diff 为空) |
 | 性能 (单次调用 12ms) | PASS |
-| background-tracer dry-run | 未执行 (需 binary 部署) |
+| background-tracer dry-run | 未执行 (需 binary 部署, 上线阻塞项) |
 
 ## 部署
 
@@ -142,15 +146,11 @@ Revert tx: `ExecutionResult::Revert` 没有 logs 字段。handler 的 fee log �
 4. 验证 `trace_debankBlock` RPC 可用
 5. 部署 background-tracer sidecar (配置 Kafka/S3 + chain_id=4217)
 
-## 待讨论 / TODO
+## 已知限制 / 关注点
 
-### exclude_precompile_calls 设置 (CTO CR #1)
+### exclude_precompile_calls 设置 (CTO CR #1 — 已撤回)
 
-当前 `trace_block.rs:230` 设为 `true`，排除标准预编译 (0x01-0x09) 的 call trace，与 `trace_transaction` 行为一致。reth-x debankBlock 设为 `false`，因为 debankBlock 是给 DeBankCore 的完整数据导出，需要完整调用链。
-
-**注意**: Tempo 自定义预编译 (TIP-20 0x20C0..., FeeManager 0xfeec..., StablecoinDEX 0xdec0...) **不受此设置影响**，它们不在 revm-inspectors 的标准预编译列表中。受影响的是 ecrecover/sha256/ripemd160 等标准预编译的 call trace。
-
-**待确认**: 是否改为 `false` 与 reth-x 一致。改动为 1 行代码，trace 数量会增加（多出标准预编译调用），不会减少。
+`trace_block.rs` 设为 `true`，排除标准预编译 (0x01-0x09) 的 call trace。CTO 初始认为会丢失 Tempo 自定义预编译 trace，**经确认：Tempo 自定义预编译 (TIP-20, FeeManager 等) 通过 `set_precompile_lookup` 注册，其地址不在 `warm_addresses()` 中，不受 `exclude_precompile_calls` 影响**。无需修改。
 
 ### per-trace storage_change 对预编译无效 (CTO CR #7)
 
@@ -159,6 +159,16 @@ Revert tx: `ExecutionResult::Revert` 没有 logs 字段。handler 的 fee log �
 block 级 `storage_contracts`（从 `diff.cache` 提取）不受影响，能正确反映所有 storage 变化的合约地址。仅 per-trace 级信号对预编译调用无效。
 
 **已知限制**，与 reth-x 行为一致（reth-x 标准预编译同样不走 SSTORE）。
+
+### always-increment log_index 的 idx gap (CTO 新增关注, P2)
+
+`debank_trace.rs` 的 `build_debank_traces` 中 `*log_index += 1` 对所有 event 无条件递增（commit 11189e66），不管 trace node 的 success 标志。
+
+**必要性**: AA tx root trace `success=false` → 所有 events 进 `error_events` → 如果只在 `success=true` 时递增，所有 events 的 idx 都是 0 → merge 到 events list 后 idx 全部重复。
+
+**副作用**: 对于成功 tx 有内部 revert 子调用（try/catch with logs）的场景，events list 中的 idx 会跳号（gap 被 error_events 消耗）。idx 仍唯一递增，只是不连续。
+
+**影响评估**: Tempo 当前 tx 类型不触发此场景。validation_hash 不使用 idx（使用 id）。需确认 DeBankCore 的 idx 用途（如果仅做排序/去重则无影响，如果做 receipt log 精确匹配则有差异）。
 
 ### genesis native token 无实际意义 (CTO CR #11)
 
