@@ -11,9 +11,16 @@ use alloy_primitives::{Address, B256, U256, map::AddressMap};
 
 /// A database that wraps an external database and an in-memory diff database.
 ///
-/// All reads go to the external DB; all commits go to both the diff DB (for
-/// later state-diff extraction) and the external DB (so subsequent transactions
-/// see prior state changes).
+/// - `Database` (mutable) reads/writes go through `db` (typically a `StateCacheDb`
+///   which has an internal cache). During block replay, subsequent txs see prior
+///   commits via this cache.
+/// - `DatabaseRef` (immutable) reads also delegate to `db`, but `State`'s
+///   `DatabaseRef` impl bypasses its cache and reads the underlying provider
+///   directly. This means `basic_ref()` returns the original parent-block state,
+///   not state modified by prior commits. This is fine for our use case — only
+///   `pre_db` uses `DatabaseRef` for diff comparison.
+/// - `DatabaseCommit` writes to both `diff` (captures all changes for state-diff
+///   extraction) and `db` (updates state for subsequent txs).
 #[derive(Debug, Clone)]
 pub struct StateDiffTraceDB<ExtDB> {
     /// The diff that stores all state changes.

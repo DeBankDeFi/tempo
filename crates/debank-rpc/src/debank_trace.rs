@@ -402,13 +402,23 @@ fn build_trace_node(
     }
     // selfdestruct handling
     if node.is_selfdestruct() {
-        child_trace_address.last_mut().map(|last| *last += 1);
+        // Build trace_address for selfdestruct: parent's trace_address + next child index.
+        // child_trace_address tracks the last child call's address, but if there are no
+        // child calls it stays empty. Fall back to parent trace_address + child count.
+        let selfdestruct_ta = if child_trace_address.is_empty() {
+            let mut ta = trace_address.clone();
+            ta.push(node.children.len());
+            ta
+        } else {
+            child_trace_address.last_mut().map(|last| *last += 1);
+            child_trace_address
+        };
         debank_node.trace.subtraces += 1;
         let mut selfdestruct_trace = DebankTrace {
             from_addr: node.trace.selfdestruct_address.unwrap_or_default(),
             to_addr: node.trace.selfdestruct_refund_target.unwrap_or_default(),
             value: node.trace.selfdestruct_transferred_value.unwrap_or_default(),
-            trace_address: child_trace_address,
+            trace_address: selfdestruct_ta,
             parent_trace_id: id.clone(),
             pos_in_parent_trace: debank_node.children.len(),
             tx_id: tx_id.clone(),

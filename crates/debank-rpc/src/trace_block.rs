@@ -305,19 +305,29 @@ where
                     };
 
                     if !extra_log_source.is_empty() {
-                        let root_trace_id = {
-                            let last = all_results.last().unwrap();
-                            last.0.first()
-                                .or(last.1.first())
-                                .map(|t| t.id.clone())
-                                .unwrap_or_default()
-                        };
+                        let last = all_results.last().unwrap();
+                        let root_trace_id = last.0.first()
+                            .or(last.1.first())
+                            .map(|t| t.id.clone())
+                            .unwrap_or_default();
+                        // Compute base pos from root trace's subtraces + all events
+                        // already attached to it, to avoid pos collision with EVM events.
+                        let root_subtraces = last.0.first()
+                            .or(last.1.first())
+                            .map(|t| t.subtraces)
+                            .unwrap_or(0);
+                        let existing_events_on_root = last.2.iter()
+                            .chain(last.3.iter())
+                            .filter(|e| e.parent_trace_id == root_trace_id)
+                            .count();
+                        let mut fee_pos = root_subtraces + existing_events_on_root;
+
                         for mut fee_event in extra_log_source {
-                            let pos = all_results.last().unwrap().2.len();
                             fee_event.parent_trace_id = root_trace_id.clone();
-                            fee_event.pos_in_parent_trace = pos;
+                            fee_event.pos_in_parent_trace = fee_pos;
                             fee_event.id = fee_event.debank_id();
                             all_results.last_mut().unwrap().2.push(fee_event);
+                            fee_pos += 1;
                         }
                     }
                 }
