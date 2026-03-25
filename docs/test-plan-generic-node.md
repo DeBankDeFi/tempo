@@ -51,12 +51,14 @@
 
 ## 1. DebankOutPut 顶层结构
 
-| # | 测试项 | 验证内容 | 结果 |
+验证方法: jq 检查字段存在性和类型。
+
+| # | 测试项 | 验证方法 | 结果 |
 |---|--------|---------|------|
-| 1.1 | 返回结构完整性 | block_file/header/state_diff/validation_hash 四个字段均存在且非 null | PASS |
-| 1.2 | validation_hash 类型 | number 类型, 非零 | PASS |
-| 1.3 | state_diff 格式 | hex string, 以 0x 开头, RLP 可解码 | PASS |
-| 1.4 | header 与 eth_getBlockByNumber 一致 | 7 个字段 (hash/stateRoot/transactionsRoot/receiptsRoot/gasUsed/number/timestamp) 与 eth_getBlockByNumber 返回值逐一对比 | PASS (7/7) |
+| 1.1 | 返回结构完整性 | jq `has("block_file","header","state_diff","validation_hash")` | PASS |
+| 1.2 | validation_hash 类型 | jq `type == "number"` 且非零 | PASS |
+| 1.3 | state_diff 格式 | 检查 `0x` 前缀 + 长度 > 10 | PASS |
+| 1.4 | header 一致性 | 7 个字段逐一与 `eth_getBlockByNumber` 对比 (详见 section 9) | PASS (7/7) |
 
 ---
 
@@ -211,30 +213,34 @@
 
 ## 6. block_file.error_traces / error_events
 
-测试区块: 0x9a2040 (含 1 笔 revert tx) + 0x9a1eb0 (全部成功, 含 AA tx)
+测试区块: 0x9a2040 (含 1 笔 revert tx, status=0x0) + 0x9a1eb0 (全部成功, 含 AA tx)
 
-| # | 测试项 | 验证内容 | 结果 |
+验证方法: 分类依据为 `eth_getTransactionReceipt.status` — status=0x0 的 tx 其 traces/events 进 error 列表, status=0x1 的进 success 列表。数量对比使用 `trace_transaction` 和 `eth_getTransactionReceipt.logs`。
+
+| # | 测试项 | 验证方法 | 结果 |
 |---|--------|---------|------|
-| 6.1 | revert tx traces → error_traces | status=0x0 的 tx, traces 在 error_traces | PASS (1 条) |
-| 6.2 | revert tx events → error_events | status=0x0 的 tx, fee log 在 error_events | PASS (1 条) |
-| 6.3 | 成功 tx 不进 error | status=0x1 的 tx (含 AA), error_traces/error_events=0 | PASS |
-| 6.4 | error_traces 字段完整 | 与 traces 相同的字段结构 | PASS |
-| 6.5 | error_events 字段完整 | 与 events 相同的字段结构 | PASS |
-| 6.6 | traces + error_traces = trace_transaction 总数 | per tx 对比 trace_transaction 返回的 trace 条数 | PASS (4/4) |
-| 6.7 | events + error_events = eth_getTransactionReceipt logs 总数 | per tx 对比 receipt.logs 条数 | PASS (5=5) |
-| 6.8 | error 字段非空 | error_traces 中的 trace: error="Reverted" | PASS |
+| 6.1 | revert tx traces → error_traces | `eth_getTransactionReceipt(revert_tx).status == 0x0` → 该 tx 的 traces 在 debankBlock.error_traces 中, 不在 traces 中 | PASS (1 条) |
+| 6.2 | revert tx events → error_events | 同上, 该 tx 的 fee log 在 error_events 中 | PASS (1 条) |
+| 6.3 | 成功 tx 不进 error | block 0x9a1eb0 全部 tx status=0x1 → error_traces=0, error_events=0 | PASS |
+| 6.4 | error_traces 字段完整 | jq 检查 error_traces[0] 与 traces[0] 字段结构一致 (18 个字段) | PASS |
+| 6.5 | error_events 字段完整 | jq 检查 error_events[0] 与 events[0] 字段结构一致 (8 个字段) | PASS |
+| 6.6 | traces + error_traces = trace_transaction | per tx: `trace_transaction` 返回条数 = debankBlock 中该 tx 的 traces + error_traces 条数 | PASS (4/4 txs) |
+| 6.7 | events + error_events = receipt logs | per block: `sum(eth_getTransactionReceipt.logs.length)` = debankBlock events + error_events | PASS (5=5) |
+| 6.8 | error 字段非空 | error_traces 中 error 字段 = "Reverted" (非空字符串) | PASS |
 
 ---
 
 ## 7. block_file.storage_contracts
 
-| # | 测试项 | 验证内容 | 结果 |
+验证方法: 与 debankBlock 自身的 traces (storage_change 字段) 交叉验证, 以及检查已知地址是否存在。
+
+| # | 测试项 | 验证方法 | 结果 |
 |---|--------|---------|------|
-| 7.1 | 类型 | array[address] | PASS |
-| 7.2 | 含 SSTORE 合约 | trace 中 storage_change=true 的 to_addr 出现在列表中 | PASS |
-| 7.3 | 含 FeeManager | `0xfeec...` 出现在列表中 | PASS |
-| 7.4 | 含 TIP-20 合约 | pathUSD 地址 (0x20c0...) 出现在列表中 | PASS |
-| 7.5 | 空区块 | 无 state 变化的空区块, storage_contracts=[] | PASS (block 1) |
+| 7.1 | 类型 | jq `type == "array"` | PASS |
+| 7.2 | 含 SSTORE 合约 | debankBlock.traces 中 storage_change=true 的合约地址出现在 storage_contracts 中 | PASS |
+| 7.3 | 含 FeeManager | 检查 `0xfeec000000000000000000000000000000000000` 在列表中 | PASS |
+| 7.4 | 含 TIP-20 合约 | 检查 `0x20c0...` 前缀地址在列表中 | PASS |
+| 7.5 | 空区块 | block 1 (仅系统 tx): storage_contracts=[] | PASS |
 
 ---
 
@@ -296,9 +302,7 @@ RLP 解码验证使用 Python rlp 库，对 block 0x9a1eb0, 0x99b150, 0x0, 0x1 �
 
 ## 9. header (alloy Header)
 
-12 个字段逐一与 eth_getBlockByNumber 对比。
-
-Pipeline Header 定义 20 个字段，全部与 eth_getBlockByNumber 逐一对比。
+验证方法: 20 个字段逐一与 `eth_getBlockByNumber` 返回值对比 (jq 取字段值, 字符串精确匹配)。
 
 | # | 测试项 | 验证内容 | 结果 |
 |---|--------|---------|------|
@@ -329,35 +333,41 @@ Pipeline Header 定义 20 个字段，全部与 eth_getBlockByNumber 逐一对�
 
 ## 10. validation_hash
 
-| # | 测试项 | 验证内容 | 结果 |
+验证方法: jq 类型检查 + 幂等性验证 (同一 block_id 两次调用对比)。
+
+| # | 测试项 | 验证方法 | 结果 |
 |---|--------|---------|------|
-| 10.1 | 类型 | number (i64) | PASS |
-| 10.2 | 非零 | validation_hash=144697 | PASS |
-| 10.3 | 算法验证 | 手动计算 SHA1 sum 取末 6 位 | 未执行 (算法已在代码中验证) |
-| 10.4 | 同一区块幂等 | 两次调用结果一致 (144697=144697) | PASS |
+| 10.1 | 类型 | jq `type == "number"` | PASS |
+| 10.2 | 非零 | jq `!= 0`, 值=144697 | PASS |
+| 10.3 | 算法验证 | SHA1(所有 id 拼接) 取末 6 位 — 算法已在 Rust 代码和 Go pipeline 代码中一致实现 | 未执行 (代码级验证) |
+| 10.4 | 幂等 | 同一 block_id 两次调用 `trace_debankBlock`, 对比 validation_hash 值 | PASS (144697=144697) |
 
 ---
 
 ## 11. 特殊区块
 
-| # | 测试项 | 验证内容 | 结果 |
+验证方法: 对不同类型区块调用 `trace_debankBlock`, 检查返回结构和字段值的合理性。
+
+| # | 测试项 | 验证方法 | 结果 |
 |---|--------|---------|------|
-| 11.1 | Genesis (block 0) | txs=15, traces=15, state_diff_len=58374 | PASS |
-| 11.2 | 空区块 (block 1) | txs=1, events=0, state_diff 全空 | PASS |
-| 11.3 | Fee 区块 (0x9a1eb0) | events 含 TIP-20 Transfer, storage_contracts 含 FeeManager | PASS |
-| 11.4 | AA tx 区块 (0x9a1eb0) | AA tx traces 在 traces 中 (非 error_traces), 2 条 | PASS |
-| 11.5 | 多 tx 区块 | idx=[0,1,2,3] 顺序正确 | PASS |
-| 11.6 | CREATE 区块 (0x99b150) | type="create", new_codes=1 | PASS |
-| 11.7 | 不存在的区块 | error: "block not found: 0xffffff00" | PASS |
-| 11.8 | 最新区块 ("latest") | height > 10000000 | PASS |
+| 11.1 | Genesis (block 0) | `trace_debankBlock("0x0")` → 检查 synthetic txs/traces 存在, state_diff 非空 | PASS (txs=15, traces=15, state_diff_len=58374) |
+| 11.2 | 空区块 (block 1) | `trace_debankBlock("0x1")` → 仅系统 tx, 无 events, state_diff 全空 | PASS |
+| 11.3 | Fee 区块 (0x9a1eb0) | 检查 events 含 `contract_id` 以 `0x20c0` 开头的 Transfer, storage_contracts 含 FeeManager 地址 | PASS |
+| 11.4 | AA tx 区块 (0x9a1eb0) | AA tx (type=0x76) 的 traces 在 traces 中 (非 error_traces), 基于 `eth_getTransactionReceipt.status=0x1` 分类 | PASS (2 条) |
+| 11.5 | 多 tx 区块 | 检查 txs[].idx 从 0 递增 | PASS [0,1,2,3] |
+| 11.6 | CREATE 区块 (0x99b150) | traces 含 type="create", 与 `trace_transaction` 对比一致; state_diff.new_codes=1 | PASS |
+| 11.7 | 不存在的区块 | `trace_debankBlock("0xffffff00")` → 返回 JSON-RPC error | PASS ("block not found") |
+| 11.8 | 最新区块 | `trace_debankBlock("latest")` → 返回当前链头 | PASS (height > 10000000) |
 
 ---
 
 ## 12. 与 background-tracer 兼容性
 
-| # | 测试项 | 验证内容 | 结果 |
+验证方法: 连续区块 parent_id 链验证 + 响应时间测量。background-tracer binary 不在 dev 机器上, dry-run 未执行。
+
+| # | 测试项 | 验证方法 | 结果 |
 |---|--------|---------|------|
-| 12.1 | JSON 可解析 | background-tracer 的 DebankOutPut 类型能反序列化 | 未执行 (需 binary) |
-| 12.2 | dry-run | background-tracer dry-run | 未执行 (需 binary) |
-| 12.3 | 连续区块 parent_id 链 | 5 个连续区块, parent_id 链一致 | PASS |
-| 12.4 | 性能 | 单次调用 12ms (< 5s) | PASS |
+| 12.1 | JSON 可解析 | background-tracer 反序列化 DebankOutPut | 未执行 (需 binary) |
+| 12.2 | dry-run | `background-tracer dry-run --rpc-address=... --start-block=X --end-block=X+5` | 未执行 (需 binary) |
+| 12.3 | 连续区块 parent_id 链 | 连续调用 5 个 block (10100400-10100404), 检查每个 block.parent_id = 前一个 block.id | PASS |
+| 12.4 | 性能 | `time curl trace_debankBlock`, 单次调用耗时 | PASS (12ms < 5s) |
