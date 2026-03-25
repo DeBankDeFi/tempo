@@ -26,13 +26,14 @@
 - [ ] 生产部署（2 台机器更新镜像）
 - [ ] 部署 background-tracer sidecar（Kafka/S3 + chain_id=4217）
 
-### 4. 多 call AA tx 适配
+### 4. 多 call AA tx 适配 (上线阻塞)
 
 - Tempo 0x76 tx 支持 `calls: Vec<Call>` 多调用原子执行
 - 当前 `DebankTransaction.to/input/value` 只展示第一个 call，其余 call 信息仅在 traces 中
 - **链上已存在多 call AA tx**（如 block 0x9eeb98: approve + swap 双 call）
 - 实际表现：`txs` 中 `to=null, input=第一个call`，第二个 call 目标/数据仅在 traces `trace_address=[1]` 可见
-- 需评估 DeBankCore 是否仅消费 traces（则无影响）还是依赖 txs.to/input（则需适配）
+- **影响范围**: leafage-evm（tx 索引/state 关联）和 DeBankCore（tx 解析）都消费 txs 字段，to/input 不完整会导致数据缺失
+- 需在上线前修复或确认消费方可容忍
 
 ### 5. dev 机器清理
 - blockchain-misc-x3 上的 tempo 容器已停止，EBS 已 detach（snapshot: snap-08859f84cfb8b1611）

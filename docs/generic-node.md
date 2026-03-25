@@ -172,7 +172,7 @@ Tempo 0x76 tx 支持 `calls: Vec<Call>`（多个调用原子执行）。`DebankT
 
 **链上已存在**: block 0x9eeb98 有 2-call AA tx（approve TIP-20 + swap 合约），`txs` 中 `to=null, input=第一个call`，第二个 call 仅在 traces `trace_address=[1]` 可见。
 
-**影响**: 需确认 DeBankCore 是否仅消费 traces（则无影响）还是依赖 txs.to/input（则需适配）。
+**影响**: leafage-evm 和 DeBankCore 都消费 blockfile.txs 字段。to/input 不完整会导致 leafage tx 索引/state 关联缺失、DeBankCore tx 解析不完整。上线前需修复或确认消费方可容忍。
 
 ### genesis native token 无实际意义 (CTO CR #11)
 
