@@ -22,7 +22,7 @@
 | 2. block | 9 | 9 | 0 | 0 |
 | 3. txs | 33 | 33 | 0 | 0 |
 | 4. traces | 10 | 10 | 0 | 0 |
-| 5. events | 6 | 6 | 0 | 0 |
+| 5. events | 10 | 6 | 0 | 4 (idx 验证待测) |
 | 6. error_traces/events | 6 | 6 | 0 | 0 |
 | 7. storage_contracts | 3 | 3 | 0 | 0 |
 | 8. state_diff (RLP) | 5 | 5 | 0 | 0 |
@@ -31,7 +31,7 @@
 | 11. 特殊区块 | 7 | 7 | 0 | 0 |
 | 12. 兼容性 | 2 | 2 | 0 | 0 |
 | EIP-1559 覆盖 | 1 | 1 | 0 | 0 |
-| **合计** | **109** | **109** | **0** | **0** |
+| **合计** | **113** | **109** | **0** | **4 (待测)** |
 
 ### trace 类型覆盖
 
@@ -41,7 +41,7 @@
 | delegatecall | PASS |
 | create | PASS (block 0x99b150) |
 | staticcall | 未覆盖 (Tempo 链上未发现) |
-| suicide | 未覆盖 (Tempo 无 SELFDESTRUCT) |
+| suicide | 未覆盖 (Tempo 代码支持 SELFDESTRUCT 但链上未发现, EIP-6780 后极少触发) |
 
 ### 已知的预期差异
 
@@ -207,7 +207,18 @@
 | # | 测试项 | 验证内容 | 结果 |
 |---|--------|---------|------|
 | 5.3.1 | event id 算法 | id = MD5(parent_trace_id + pos_in_parent_trace), 手动计算验证 | PASS (expected=actual) |
-| 5.3.2 | id 全局唯一 | 同一区块内所有 event id 无重复 | PASS (9 unique / 9 total) |
+| 5.3.2 | id 全局唯一 | 同一区块内所有 event id (events + error_events) 无重复 | 待重测 |
+
+### 5.4 idx 全局递增验证
+
+验证方法: 收集同一区块内所有 events + error_events 的 idx 值，检查全局递增无重复。
+
+| # | 测试项 | 验证方法 | 结果 |
+|---|--------|---------|------|
+| 5.4.1 | idx 无重复 | 所有 event idx 排序后 unique 数量 = 总数量 | 待测 |
+| 5.4.2 | idx 全局递增 | idx 值 = [0, 1, 2, ..., N-1] 连续序列 | 待测 |
+| 5.4.3 | idx 跨 tx 连续 | 多 tx 区块: tx[0] 的 events idx 从 0 开始, tx[1] 的 idx 接续 tx[0] 结束位置 | 待测 |
+| 5.4.4 | fee event idx 不与 EVM event 重复 | 含 fee log 的区块: fee event idx 在 EVM events idx 之后 | 待测 |
 
 ---
 
