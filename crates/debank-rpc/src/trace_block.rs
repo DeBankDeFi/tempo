@@ -154,6 +154,7 @@ where
                         .and_then(|v| v.as_str())
                         .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
                     let signature_type: Option<String> = tx_json.get("signature")
+                        .and_then(|v| v.get("signature"))
                         .and_then(|v| v.get("type"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
