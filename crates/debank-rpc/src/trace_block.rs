@@ -153,9 +153,14 @@ where
                     let valid_after: Option<u64> = tx_json.get("validAfter")
                         .and_then(|v| v.as_str())
                         .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+                    // Signature JSON has two formats:
+                    // - v2 keychain: {signature: {type: "secp256k1", ...}, version, keyId}
+                    // - direct: {type: "webAuthn", r, s, pubKeyX, pubKeyY, ...}
                     let signature_type: Option<String> = tx_json.get("signature")
-                        .and_then(|v| v.get("signature"))
-                        .and_then(|v| v.get("type"))
+                        .and_then(|sig| {
+                            sig.get("signature").and_then(|inner| inner.get("type"))
+                                .or_else(|| sig.get("type"))
+                        })
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
                     (calls, fee_token, nonce_key, valid_before, valid_after, signature_type)
