@@ -97,6 +97,33 @@ pub struct DebankTransaction {
     #[serde(rename = "idx")]
     pub transaction_index: u64,
     pub value: U256,
+    // Tempo 0x76 (AA tx) fields — None/empty for standard tx types.
+    /// All calls in the AA tx. Standard txs have a single call derived from to/value/input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls: Option<Vec<TempoCall>>,
+    /// TIP-20 token address used to pay gas fees.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee_token: Option<Address>,
+    /// 2D nonce key for parallelizable transactions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce_key: Option<U256>,
+    /// Transaction validity window (unix timestamp upper bound).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_before: Option<u64>,
+    /// Transaction validity window (unix timestamp lower bound).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_after: Option<u64>,
+    /// Signature type: "secp256k1", "p256", or "webAuthn".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature_type: Option<String>,
+}
+
+/// A single call within a Tempo AA transaction.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TempoCall {
+    pub to: Address,
+    pub value: U256,
+    pub input: Bytes,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -718,4 +745,144 @@ pub fn build_genesis_txs_and_traces(
     });
 
     (txs, traces)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debank_tx_aa_fields_serialization() {
+        let tx = DebankTransaction {
+            id: "0xabc".to_string(),
+            from: Address::ZERO,
+            to: Address::ZERO,
+            gas_limit: 100000,
+            gas_price: 20000000000,
+            gas_used: 50000,
+            status: true,
+            gas_fee_cap: 24000000000,
+            gas_tip_cap: 0,
+            input: Bytes::from(vec![0x09, 0x5e, 0xa7, 0xb3]),
+            nonce: 1,
+            transaction_index: 0,
+            value: U256::ZERO,
+            calls: Some(vec![
+                TempoCall {
+                    to: "0x20c0000000000000000000000000000000000000".parse().unwrap(),
+                    value: U256::ZERO,
+                    input: Bytes::from(vec![0x09, 0x5e, 0xa7, 0xb3]),
+                },
+                TempoCall {
+                    to: "0x99979c31c9785c4391dd02c00d981b30319add8f".parse().unwrap(),
+                    value: U256::ZERO,
+                    input: Bytes::from(vec![0xae, 0x77, 0xc2, 0x37]),
+                },
+            ]),
+            fee_token: Some("0x20c0000000000000000000000000000000000000".parse().unwrap()),
+            nonce_key: Some(U256::ZERO),
+            valid_before: None,
+            valid_after: None,
+            signature_type: Some("webAuthn".to_string()),
+        };
+
+        let json = serde_json::to_value(&tx).unwrap();
+
+        // Verify AA fields present
+        assert_eq!(json["calls"].as_array().unwrap().len(), 2);
+        assert_eq!(json["calls"][0]["to"], "0x20c0000000000000000000000000000000000000");
+        assert_eq!(json["calls"][1]["to"], "0x99979c31c9785c4391dd02c00d981b30319add8f");
+        assert_eq!(json["fee_token"], "0x20c0000000000000000000000000000000000000");
+        assert_eq!(json["signature_type"], "webAuthn");
+
+        // Verify valid_before/valid_after omitted when None
+        assert!(json.get("valid_before").is_none());
+        assert!(json.get("valid_after").is_none());
+
+        // Round-trip
+        let deserialized: DebankTransaction = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.calls.as_ref().unwrap().len(), 2);
+        assert_eq!(deserialized.fee_token, tx.fee_token);
+        assert_eq!(deserialized.signature_type, tx.signature_type);
+    }
+
+    #[test]
+    fn test_debank_tx_standard_omits_aa_fields() {
+        let tx = DebankTransaction {
+            id: "0xdef".to_string(),
+            from: Address::ZERO,
+            to: "0xf851abca1d0fd1df8eaba6de466a102996b7d7b2".parse().unwrap(),
+            gas_limit: 21000,
+            gas_price: 20000000000,
+            gas_used: 21000,
+            status: true,
+            input: Bytes::default(),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&tx).unwrap();
+
+        // AA fields should be absent (skip_serializing_if = None)
+        assert!(json.get("calls").is_none());
+        assert!(json.get("fee_token").is_none());
+        assert!(json.get("nonce_key").is_none());
+        assert!(json.get("valid_before").is_none());
+        assert!(json.get("valid_after").is_none());
+        assert!(json.get("signature_type").is_none());
+    }
+
+    #[test]
+    fn test_debank_tx_deserialize_ignores_unknown_fields() {
+        // Simulate old consumer receiving new fields — should not fail
+        let json = r#"{
+            "id": "0x123",
+            "from_addr": "0x0000000000000000000000000000000000000000",
+            "to_addr": "0x0000000000000000000000000000000000000000",
+            "gas_limit": 100000,
+            "gas_price": 20000000000,
+            "gas_used": 50000,
+            "status": true,
+            "max_fee_per_gas": 24000000000,
+            "max_priority_fee_per_gas": 0,
+            "input": "0x",
+            "nonce": 1,
+            "idx": 0,
+            "value": "0x0",
+            "calls": [{"to": "0x20c0000000000000000000000000000000000000", "value": "0x0", "input": "0x095ea7b3"}],
+            "fee_token": "0x20c0000000000000000000000000000000000000",
+            "nonce_key": "0x0",
+            "signature_type": "webAuthn",
+            "some_future_field": "should be ignored"
+        }"#;
+
+        let tx: DebankTransaction = serde_json::from_str(json).unwrap();
+        assert_eq!(tx.calls.as_ref().unwrap().len(), 1);
+        assert_eq!(tx.signature_type, Some("webAuthn".to_string()));
+    }
+
+    #[test]
+    fn test_debank_tx_backward_compatible_deserialize() {
+        // Simulate new consumer reading old format without AA fields
+        let json = r#"{
+            "id": "0x456",
+            "from_addr": "0x0000000000000000000000000000000000000000",
+            "to_addr": "0x0000000000000000000000000000000000000000",
+            "gas_limit": 21000,
+            "gas_price": 20000000000,
+            "gas_used": 21000,
+            "status": true,
+            "max_fee_per_gas": 0,
+            "max_priority_fee_per_gas": 0,
+            "input": "0x",
+            "nonce": 0,
+            "idx": 0,
+            "value": "0x0"
+        }"#;
+
+        let tx: DebankTransaction = serde_json::from_str(json).unwrap();
+        assert!(tx.calls.is_none());
+        assert!(tx.fee_token.is_none());
+        assert!(tx.nonce_key.is_none());
+        assert!(tx.signature_type.is_none());
+    }
 }

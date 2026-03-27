@@ -4,8 +4,9 @@
 //! and state diffs for consumption by background-tracer → S3/Kafka → leafage-evm.
 
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
+use std::str::FromStr;
 use alloy_eips::BlockId;
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256, U256};
 use alloy_rpc_types_eth::Header;
 use jsonrpsee::core::RpcResult;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
@@ -129,6 +130,39 @@ where
         for index in 0..block_txs.len() {
             let tx = &block_txs[index];
             let receipt = &receipts[index];
+
+            // Extract 0x76 AA tx fields via serde round-trip.
+            // Cannot use tempo_primitives directly (workspace feature unification
+            // causes reth_codecs::Compact compile errors). Serialize the tx and
+            // extract AA-specific fields from the JSON.
+            let (calls, fee_token, nonce_key, valid_before, valid_after, signature_type) = {
+                let tx_json = serde_json::to_value(tx).unwrap_or_default();
+                let is_aa = tx_json.get("type").and_then(|t| t.as_str()) == Some("0x76");
+                if is_aa {
+                    let calls: Option<Vec<TempoCall>> = tx_json.get("calls")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok());
+                    let fee_token: Option<Address> = tx_json.get("feeToken")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse().ok());
+                    let nonce_key: Option<U256> = tx_json.get("nonceKey")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| U256::from_str(s).ok());
+                    let valid_before: Option<u64> = tx_json.get("validBefore")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+                    let valid_after: Option<u64> = tx_json.get("validAfter")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+                    let signature_type: Option<String> = tx_json.get("signature")
+                        .and_then(|v| v.get("type"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    (calls, fee_token, nonce_key, valid_before, valid_after, signature_type)
+                } else {
+                    (None, None, None, None, None, None)
+                }
+            };
+
             debank_txs.push(DebankTransaction {
                 id: receipt.transaction_hash().to_string(),
                 from: receipt.from(),
@@ -143,6 +177,12 @@ where
                 nonce: tx.nonce(),
                 transaction_index: receipt.transaction_index().unwrap_or(0),
                 value: tx.value(),
+                calls,
+                fee_token,
+                nonce_key,
+                valid_before,
+                valid_after,
+                signature_type,
             });
         }
 
