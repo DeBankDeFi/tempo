@@ -135,52 +135,15 @@ where
             // Cannot use tempo_primitives directly (workspace feature unification
             // causes reth_codecs::Compact compile errors). Serialize the tx and
             // extract AA-specific fields from the JSON.
-            let aa_fields = {
-                let tx_json = serde_json::to_value(tx).unwrap_or_default();
-                let is_aa = tx_json.get("type").and_then(|t| t.as_str()) == Some("0x76");
-                if is_aa {
-                    let calls: Option<Vec<TempoCall>> = tx_json.get("calls")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok());
-                    let fee_token: Option<Address> = tx_json.get("feeToken")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse().ok());
-                    let nonce_key: Option<U256> = tx_json.get("nonceKey")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| U256::from_str(s).ok());
-                    let valid_before: Option<u64> = tx_json.get("validBefore")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
-                    let valid_after: Option<u64> = tx_json.get("validAfter")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
-                    // Signature JSON has two formats:
-                    // - v2 keychain: {signature: {type: "secp256k1", ...}, version, keyId}
-                    // - direct: {type: "webAuthn", r, s, pubKeyX, pubKeyY, ...}
-                    let signature_type: Option<String> = tx_json.get("signature")
-                        .and_then(|sig| {
-                            sig.get("signature").and_then(|inner| inner.get("type"))
-                                .or_else(|| sig.get("type"))
-                        })
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let signature = tx_json.get("signature").cloned();
-                    let fee_payer_signature = tx_json.get("feePayerSignature")
-                        .filter(|v| !v.is_null()).cloned();
-                    let key_authorization = tx_json.get("keyAuthorization")
-                        .filter(|v| !v.is_null()).cloned();
-                    let aa_authorization_list: Option<Vec<serde_json::Value>> = tx_json
-                        .get("aaAuthorizationList")
-                        .and_then(|v| v.as_array().cloned())
-                        .filter(|v| !v.is_empty());
-                    (calls, fee_token, nonce_key, valid_before, valid_after,
-                     signature_type, signature, fee_payer_signature,
-                     key_authorization, aa_authorization_list)
-                } else {
-                    (None, None, None, None, None, None, None, None, None, None)
-                }
+            // Extract 0x76 AA tx fields from serde JSON.
+            let tx_json = serde_json::to_value(tx).unwrap_or_default();
+            let is_aa = tx_json.get("type").and_then(|t| t.as_str()) == Some("0x76");
+
+            let parse_hex_u64 = |v: &serde_json::Value| -> Option<u64> {
+                v.as_str().and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
             };
 
-            debank_txs.push(DebankTransaction {
+            let mut dtx = DebankTransaction {
                 id: receipt.transaction_hash().to_string(),
                 from: receipt.from(),
                 to: receipt.to().unwrap_or_default(),
@@ -194,17 +157,46 @@ where
                 nonce: tx.nonce(),
                 transaction_index: receipt.transaction_index().unwrap_or(0),
                 value: tx.value(),
-                calls: aa_fields.0,
-                fee_token: aa_fields.1,
-                nonce_key: aa_fields.2,
-                valid_before: aa_fields.3,
-                valid_after: aa_fields.4,
-                signature_type: aa_fields.5,
-                signature: aa_fields.6,
-                fee_payer_signature: aa_fields.7,
-                key_authorization: aa_fields.8,
-                aa_authorization_list: aa_fields.9,
-            });
+                ..Default::default()
+            };
+
+            if is_aa {
+                dtx.chain_id = tx_json.get("chainId")
+                    .and_then(|v| parse_hex_u64(v));
+                dtx.calls = tx_json.get("calls")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                dtx.fee_token = tx_json.get("feeToken")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok());
+                dtx.nonce_key = tx_json.get("nonceKey")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| U256::from_str(s).ok());
+                dtx.valid_before = tx_json.get("validBefore").and_then(|v| parse_hex_u64(v));
+                dtx.valid_after = tx_json.get("validAfter").and_then(|v| parse_hex_u64(v));
+                // Signature JSON has two formats:
+                // - v2 keychain: {signature: {type, r, s, ...}, version, keyId, userAddress}
+                // - direct: {type, r, s, pubKeyX, pubKeyY, webauthnData}
+                dtx.signature_type = tx_json.get("signature")
+                    .and_then(|sig| {
+                        sig.get("signature").and_then(|inner| inner.get("type"))
+                            .or_else(|| sig.get("type"))
+                    })
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                dtx.signature = tx_json.get("signature").cloned();
+                dtx.fee_payer_signature = tx_json.get("feePayerSignature")
+                    .filter(|v| !v.is_null()).cloned();
+                dtx.key_authorization = tx_json.get("keyAuthorization")
+                    .filter(|v| !v.is_null()).cloned();
+                dtx.aa_authorization_list = tx_json.get("aaAuthorizationList")
+                    .and_then(|v| v.as_array().cloned())
+                    .filter(|v| !v.is_empty());
+                dtx.access_list = tx_json.get("accessList")
+                    .and_then(|v| v.as_array().cloned())
+                    .filter(|v| !v.is_empty());
+            }
+
+            debank_txs.push(dtx);
         }
 
         // Receipt statuses + logs per tx.

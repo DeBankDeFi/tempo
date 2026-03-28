@@ -98,6 +98,10 @@ pub struct DebankTransaction {
     pub transaction_index: u64,
     pub value: U256,
     // Tempo 0x76 (AA tx) fields — None/empty for standard tx types.
+    // Aligned with TempoTransaction in crates/primitives/src/transaction/tempo_transaction.rs
+    /// Chain ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<u64>,
     /// All calls in the AA tx. Standard txs have a single call derived from to/value/input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub calls: Option<Vec<TempoCall>>,
@@ -128,6 +132,9 @@ pub struct DebankTransaction {
     /// AA authorization list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aa_authorization_list: Option<Vec<serde_json::Value>>,
+    /// EIP-2930 access list (also used by 0x76 AA tx).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_list: Option<Vec<serde_json::Value>>,
 }
 
 /// A single call within a Tempo AA transaction.
@@ -807,11 +814,14 @@ mod tests {
             fee_payer_signature: None,
             key_authorization: None,
             aa_authorization_list: None,
+            access_list: None,
+            chain_id: Some(4217),
         };
 
         let json = serde_json::to_value(&tx).unwrap();
 
         // Verify AA fields present
+        assert_eq!(json["chain_id"], 4217);
         assert_eq!(json["calls"].as_array().unwrap().len(), 2);
         assert_eq!(json["calls"][0]["to"], "0x20c0000000000000000000000000000000000000");
         assert_eq!(json["calls"][1]["to"], "0x99979c31c9785c4391dd02c00d981b30319add8f");
@@ -825,6 +835,7 @@ mod tests {
         assert!(json.get("fee_payer_signature").is_none());
         assert!(json.get("key_authorization").is_none());
         assert!(json.get("aa_authorization_list").is_none());
+        assert!(json.get("access_list").is_none());
 
         // Round-trip
         let deserialized: DebankTransaction = serde_json::from_value(json).unwrap();
@@ -861,6 +872,8 @@ mod tests {
         assert!(json.get("fee_payer_signature").is_none());
         assert!(json.get("key_authorization").is_none());
         assert!(json.get("aa_authorization_list").is_none());
+        assert!(json.get("access_list").is_none());
+        assert!(json.get("chain_id").is_none());
     }
 
     #[test]
