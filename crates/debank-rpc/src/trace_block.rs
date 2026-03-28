@@ -135,7 +135,7 @@ where
             // Cannot use tempo_primitives directly (workspace feature unification
             // causes reth_codecs::Compact compile errors). Serialize the tx and
             // extract AA-specific fields from the JSON.
-            let (calls, fee_token, nonce_key, valid_before, valid_after, signature_type) = {
+            let aa_fields = {
                 let tx_json = serde_json::to_value(tx).unwrap_or_default();
                 let is_aa = tx_json.get("type").and_then(|t| t.as_str()) == Some("0x76");
                 if is_aa {
@@ -163,9 +163,20 @@ where
                         })
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
-                    (calls, fee_token, nonce_key, valid_before, valid_after, signature_type)
+                    let signature = tx_json.get("signature").cloned();
+                    let fee_payer_signature = tx_json.get("feePayerSignature")
+                        .filter(|v| !v.is_null()).cloned();
+                    let key_authorization = tx_json.get("keyAuthorization")
+                        .filter(|v| !v.is_null()).cloned();
+                    let aa_authorization_list: Option<Vec<serde_json::Value>> = tx_json
+                        .get("aaAuthorizationList")
+                        .and_then(|v| v.as_array().cloned())
+                        .filter(|v| !v.is_empty());
+                    (calls, fee_token, nonce_key, valid_before, valid_after,
+                     signature_type, signature, fee_payer_signature,
+                     key_authorization, aa_authorization_list)
                 } else {
-                    (None, None, None, None, None, None)
+                    (None, None, None, None, None, None, None, None, None, None)
                 }
             };
 
@@ -183,12 +194,16 @@ where
                 nonce: tx.nonce(),
                 transaction_index: receipt.transaction_index().unwrap_or(0),
                 value: tx.value(),
-                calls,
-                fee_token,
-                nonce_key,
-                valid_before,
-                valid_after,
-                signature_type,
+                calls: aa_fields.0,
+                fee_token: aa_fields.1,
+                nonce_key: aa_fields.2,
+                valid_before: aa_fields.3,
+                valid_after: aa_fields.4,
+                signature_type: aa_fields.5,
+                signature: aa_fields.6,
+                fee_payer_signature: aa_fields.7,
+                key_authorization: aa_fields.8,
+                aa_authorization_list: aa_fields.9,
             });
         }
 

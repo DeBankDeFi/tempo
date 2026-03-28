@@ -116,6 +116,18 @@ pub struct DebankTransaction {
     /// Signature type: "secp256k1", "p256", or "webAuthn".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature_type: Option<String>,
+    /// Full signature object (format varies by signature_type).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<serde_json::Value>,
+    /// Fee payer signature for gas sponsorship.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee_payer_signature: Option<serde_json::Value>,
+    /// Key authorization data.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_authorization: Option<serde_json::Value>,
+    /// AA authorization list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aa_authorization_list: Option<Vec<serde_json::Value>>,
 }
 
 /// A single call within a Tempo AA transaction.
@@ -784,6 +796,17 @@ mod tests {
             valid_before: None,
             valid_after: None,
             signature_type: Some("webAuthn".to_string()),
+            signature: Some(serde_json::json!({
+                "type": "webAuthn",
+                "r": "0xabc",
+                "s": "0xdef",
+                "pubKeyX": "0x111",
+                "pubKeyY": "0x222",
+                "webauthnData": "0x333"
+            })),
+            fee_payer_signature: None,
+            key_authorization: None,
+            aa_authorization_list: None,
         };
 
         let json = serde_json::to_value(&tx).unwrap();
@@ -794,16 +817,21 @@ mod tests {
         assert_eq!(json["calls"][1]["to"], "0x99979c31c9785c4391dd02c00d981b30319add8f");
         assert_eq!(json["fee_token"], "0x20c0000000000000000000000000000000000000");
         assert_eq!(json["signature_type"], "webAuthn");
+        assert_eq!(json["signature"]["type"], "webAuthn");
 
-        // Verify valid_before/valid_after omitted when None
+        // Verify None fields omitted
         assert!(json.get("valid_before").is_none());
         assert!(json.get("valid_after").is_none());
+        assert!(json.get("fee_payer_signature").is_none());
+        assert!(json.get("key_authorization").is_none());
+        assert!(json.get("aa_authorization_list").is_none());
 
         // Round-trip
         let deserialized: DebankTransaction = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.calls.as_ref().unwrap().len(), 2);
         assert_eq!(deserialized.fee_token, tx.fee_token);
         assert_eq!(deserialized.signature_type, tx.signature_type);
+        assert!(deserialized.signature.is_some());
     }
 
     #[test]
@@ -829,6 +857,10 @@ mod tests {
         assert!(json.get("valid_before").is_none());
         assert!(json.get("valid_after").is_none());
         assert!(json.get("signature_type").is_none());
+        assert!(json.get("signature").is_none());
+        assert!(json.get("fee_payer_signature").is_none());
+        assert!(json.get("key_authorization").is_none());
+        assert!(json.get("aa_authorization_list").is_none());
     }
 
     #[test]
