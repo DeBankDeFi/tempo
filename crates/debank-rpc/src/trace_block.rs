@@ -161,6 +161,11 @@ where
             };
 
             if is_aa {
+                // AA tx has no top-level to/input/value; real data is in calls.
+                // Clear the degraded values filled by trait methods from calls[0].
+                dtx.to = Address::ZERO;
+                dtx.input = Default::default();
+                dtx.value = U256::ZERO;
                 dtx.chain_id = tx_json.get("chainId")
                     .and_then(|v| parse_hex_u64(v));
                 dtx.calls = tx_json.get("calls")
