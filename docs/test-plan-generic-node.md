@@ -1,0 +1,411 @@
+# trace_debankBlock 测试计划
+
+## 测试环境
+
+- 节点: blockchain-misc-x3 dev 环境
+- 镜像: `blockchain/tempo:e13d513`
+- 端口: 8566
+- 对照: `eth_getBlockByNumber` / `eth_getTransactionReceipt` / `trace_transaction`
+- 日期: 2026-03-25
+- 测试区块:
+  - 0x9a1eb0 (10100400, 4 txs 含 AA tx, 主测试块)
+  - 0x9a2040 (10100800, 含 revert tx, revert 前无 event)
+  - 0x99e15c (10084700, 含 revert tx, revert 前有 6 个 EVM event)
+  - 0x99b150 (10072400, 含 CREATE trace)
+  - 0x9e8900 (10356992, 含 EIP-1559 tx)
+  - 0x0 (genesis), 0x1 (empty)
+
+# 测试结果概要
+
+| 大类 | 测试点 | 通过 | 失败 | 不适用 |
+|------|--------|------|------|--------|
+| 1. 顶层结构 | 4 | 4 | 0 | 0 |
+| 2. block | 9 | 9 | 0 | 0 |
+| 3. txs | 33 | 33 | 0 | 0 |
+| 4. traces | 10 | 10 | 0 | 0 |
+| 5. events | 10 | 10 | 0 | 0 |
+| 6. error_traces/events | 10 | 10 | 0 | 0 |
+| 7. storage_contracts | 5 | 5 | 0 | 0 |
+| 8. state_diff (RLP) | 16 | 15 | 0 | 1 (selfdestruct 未覆盖) |
+| 9. header | 20 | 20 | 0 | 0 |
+| 10. validation_hash | 4 | 3 | 0 | 1 (算法验证未执行) |
+| 11. 特殊区块 | 10 | 10 | 0 | 0 |
+| 12. 兼容性 | 4 | 2 | 0 | 2 (dry-run 未执行) |
+| EIP-1559 覆盖 | 1 | 1 | 0 | 0 |
+| **合计** | **136** | **132** | **0** | **4 (selfdestruct/算法验证/dry-run×2)** |
+
+### trace 类型覆盖
+
+| 类型 | 状态 |
+|------|------|
+| call | PASS |
+| delegatecall | PASS |
+| create | PASS (block 0x99b150) |
+| staticcall | PASS (block 0x99e15c, call_type="staticcall", 与 trace_transaction 一致) |
+| suicide | 未覆盖 (识别字段: `call_create_type="suicide"`, 采样 11100 个区块 (block 1K-11.1M, 步长 1000, 覆盖全链) 未发现, EIP-6780 后极少触发) |
+
+### 已知的预期差异
+
+1. **AA tx (0x76) to_addr/input**: debankBlock 返回实际调用目标和数据（从 receipt 取），eth_getBlockByNumber 返回 AA 信封层（to=null, input=短 payload）。对 DeBankCore 是正确行为，不计为 FAIL。
+2. **Revert tx with EVM events**: `events + error_events != receipt logs`。原因：revert 前 emit 的 EVM events 在 receipt 中被回滚不存在，但 debankBlock 的 error_events 保留了这些 events（inspector 捕获）+ fee log。正确关系：`success_events + revert_fee_events = receipt_logs`。与 reth-x 行为一致。
+
+---
+
+## 1. DebankOutPut 顶层结构
+
+验证方法: jq 检查字段存在性和类型。
+
+| # | 测试项 | 验证方法 | 结果 |
+|---|--------|---------|------|
+| 1.1 | 返回结构完整性 | jq `has("block_file","header","state_diff","validation_hash")` | PASS |
+| 1.2 | validation_hash 类型 | jq `type == "number"` 且非零 | PASS |
+| 1.3 | state_diff 格式 | 检查 `0x` 前缀 + 长度 > 10 | PASS |
+| 1.4 | header 一致性 | 7 个字段逐一与 `eth_getBlockByNumber` 对比 (详见 section 9) | PASS (7/7) |
+
+---
+
+## 2. block_file.block (DebankBlock)
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 2.1 | id | 类型 string(hex), 与 eth_getBlockByNumber.hash 一致 | PASS |
+| 2.2 | height | 类型 number, 与请求的 block_id 一致 | PASS |
+| 2.3 | parent_id | 类型 string(hex), 与 eth_getBlockByNumber.parentHash 一致 | PASS |
+| 2.4 | base_fee_per_gas | 类型 number 或 null(genesis), 与 eth_getBlockByNumber.baseFeePerGas 一致 | PASS |
+| 2.5 | miner | 类型 string(address), 与 eth_getBlockByNumber.miner 一致 | PASS |
+| 2.6 | gas_limit | 类型 number, 与 eth_getBlockByNumber.gasLimit 一致 | PASS |
+| 2.7 | gas_used | 类型 number, 与 eth_getBlockByNumber.gasUsed 一致 | PASS |
+| 2.8 | timestamp | 类型 number, 与 eth_getBlockByNumber.timestamp 一致 | PASS |
+| 2.9 | process_start_timestamp | 类型 number, 合理范围 (近期 ms 时间戳) | PASS |
+
+---
+
+## 3. block_file.txs (DebankTransaction)
+
+### 3.1 字段类型验证
+
+已对 4 笔 tx (block 0x9a1eb0) 逐字段对比，8 字段 × 4 tx = 32 项全部 PASS。
+
+对比来源：
+- `eth_getTransactionReceipt` (简写 receipt): id, from_addr, gas_price, gas_used, status, idx
+- `eth_getBlockByNumber(block, true)` 的 transactions 数组 (简写 tx): to_addr, gas_limit, nonce, input, value, max_fee_per_gas, max_priority_fee_per_gas
+
+| # | 字段 | 类型 | 对比 API 和字段 | 结果 |
+|---|------|------|---------------|------|
+| 3.1.1 | id | string | receipt.transactionHash | PASS (4/4) |
+| 3.1.2 | from_addr | string(address) | receipt.from | PASS (4/4) |
+| 3.1.3 | to_addr | string(address) | tx.to (AA tx 取 receipt.to) | PASS (4/4) |
+| 3.1.4 | gas_limit | number | tx.gas | PASS (4/4) |
+| 3.1.5 | gas_price | number | receipt.effectiveGasPrice | PASS (4/4) |
+| 3.1.6 | gas_used | number | receipt.gasUsed | PASS (4/4) |
+| 3.1.7 | status | boolean | receipt.status (0x1→true, 0x0→false) | PASS (4/4) |
+| 3.1.8 | max_fee_per_gas | number | tx.maxFeePerGas | PASS |
+| 3.1.9 | max_priority_fee_per_gas | number | tx.maxPriorityFeePerGas | PASS |
+| 3.1.10 | input | string(hex) | tx.input | PASS |
+| 3.1.11 | nonce | number | tx.nonce | PASS (4/4) |
+| 3.1.12 | idx | number | receipt.transactionIndex, 从 0 递增 | PASS (4/4) |
+| 3.1.13 | value | string(hex U256) | tx.value | PASS |
+
+### 3.2 tx 类型覆盖
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 3.2.1 | Legacy tx (type=0x0) | gas_price>0, max_fee_per_gas=gas_price, max_priority_fee_per_gas=0 | PASS (3 笔) |
+| 3.2.2 | EIP-1559 tx (type=0x2) | max_fee_per_gas>0 | PASS (block 0x9e8900) |
+| 3.2.3 | AA tx (type=0x76) | from_addr 为 AA 账户, to_addr=实际调用目标 (非 AA 信封) | PASS |
+| 3.2.4 | System tx (from=0x0) | gas_limit=0, gas_used=0, status=true | PASS |
+| 3.2.5 | 成功 tx | status=true | PASS |
+| 3.2.6 | Revert tx | status=false (block 0x9a2040) | PASS |
+| 3.2.7 | txs 数量 | 与 eth_getBlockByNumber.transactions 数量一致 | PASS (4=4) |
+| 3.2.8 | idx 顺序 | 从 0 递增, 与区块内 tx 顺序一致 | PASS [0,1,2,3] |
+
+---
+
+## 4. block_file.traces (DebankTrace)
+
+### 4.1 字段验证 (逐字段与 trace_transaction 对比)
+
+已对比区块: 0x9a1eb0 (10 traces, call+delegatecall), 0x9a2040 (6 traces, 含 revert), 0x99b150 (5 traces, 含 create)。共 21 条 trace，每条比 11 个字段，全部 MATCH。
+
+| # | 字段 | 类型 | trace_transaction 对应字段 | 结果 |
+|---|------|------|--------------------------|------|
+| 4.1.1 | id | string(MD5 hex, 32 chars) | 无对应 (DeBank 自有字段, MD5 算法验证) | PASS |
+| 4.1.2 | from_addr | string(address) | action.from | PASS (21/21) |
+| 4.1.3 | gas_limit | number | action.gas (十进制 vs hex) | PASS (21/21) |
+| 4.1.4 | input | string(hex) | action.input (call) / action.init (create) | PASS (21/21) |
+| 4.1.5 | to_addr | string(address) | action.to (call) / result.address (create) | PASS (21/21) |
+| 4.1.6 | value | string(hex U256) | action.value | PASS (21/21) |
+| 4.1.7 | gas_used | number | result.gasUsed | PASS (21/21) |
+| 4.1.8 | output | string(hex) | result.output (call) / result.code (create) | PASS (21/21) |
+| 4.1.9 | type | string | type ("call"/"create") | PASS (21/21) |
+| 4.1.10 | call_type | string | action.callType (call 时) / "" (create 时) | PASS (21/21) |
+| 4.1.11 | tx_id | string(tx hash) | transactionHash | PASS (21/21) |
+| 4.1.12 | parent_trace_id | string | 无对应 (DeBank 自有字段) | PASS (MD5 验证) |
+| 4.1.13 | pos_in_parent_trace | number | 无对应 (DeBank 自有字段) | PASS |
+| 4.1.14 | self_storage_change | boolean | 无对应 (SSTORE opcode 检测) | PASS (类型验证) |
+| 4.1.15 | storage_change | boolean | 无对应 (含子 trace 传播) | PASS (传播逻辑验证) |
+| 4.1.16 | subtraces | number | subtraces | PASS (21/21) |
+| 4.1.17 | trace_address | array[number] | traceAddress | PASS (21/21) |
+| 4.1.18 | error | string | error (成功=null, 失败="Reverted") | PASS (revert block 验证) |
+
+### 4.2 trace type 覆盖
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 4.2.1 | call 类型 | type="call", call_type="call" | PASS (block 0x9a1eb0, 7 条) |
+| 4.2.2 | delegatecall 类型 | type="call", call_type="delegatecall" | PASS (block 0x9a1eb0, 1 条) |
+| 4.2.3 | staticcall 类型 | type="call", call_type="staticcall" | PASS (block 0x99e15c, 与 trace_transaction 一致) |
+| 4.2.4 | create 类型 | type="create", call_type="", to_addr=创建的合约地址 | PASS (block 0x99b150, to_addr=0x28fc...f816) |
+| 4.2.5 | 深层嵌套 | trace_address 多层 (如 [0,0,0,0,0]) | PASS (max depth=5) |
+| 4.2.6 | storage_change 传播 | 子 trace 有 SSTORE, 父 trace.storage_change=true | PASS |
+
+### 4.3 ID 计算验证
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 4.3.1 | trace id 算法 | id = MD5(tx_id + parent_trace_id + pos_in_parent_trace), 手动计算验证 | PASS (expected=actual) |
+| 4.3.2 | root trace id | parent_trace_id="", pos=0, 验证 MD5 | PASS |
+| 4.3.3 | id 全局唯一 | 同一区块内所有 trace id 无重复 | PASS (10 unique / 10 total) |
+
+### 4.4 与 trace_transaction 对比
+
+| # | 测试项 | 验证内容 |
+|---|--------|---------|
+| 4.4.1 | trace 数量一致 | debankBlock traces+error_traces = trace_transaction 总数 (per tx), 3 个区块全部 PASS |
+| 4.4.2 | 全字段对比 | 11 个字段 (from/to/type/callType/gas/gasUsed/input/output/value/subtraces/traceAddress) × 21 条 trace, 全部 MATCH |
+| 4.4.3 | CREATE trace | block 0x99b150: type="create", to_addr=result.address, input=action.init, output=result.code, call_type="" PASS |
+
+---
+
+## 5. block_file.events (DebankEvent)
+
+### 5.1 字段类型验证
+
+对比来源: `eth_getTransactionReceipt` 返回的 `logs[]` 数组 (简写 receipt.logs)。
+
+| # | 字段 | 类型 | 对比 API 和字段 | 结果 |
+|---|------|------|---------------|------|
+| 5.1.1 | id | string(MD5 hex, 32 chars) | 无对应 (DeBank 自有字段, MD5 算法验证) | PASS |
+| 5.1.2 | contract_id | string(address) | eth_getTransactionReceipt.logs[].address | PASS |
+| 5.1.3 | selector | string(hex, topic[0]) | eth_getTransactionReceipt.logs[].topics[0] | PASS |
+| 5.1.4 | topics | array[string] | eth_getTransactionReceipt.logs[].topics[1:] (不含 topic[0]) | PASS |
+| 5.1.5 | data | string(hex) | eth_getTransactionReceipt.logs[].data | PASS |
+| 5.1.6 | parent_trace_id | string | 无对应。逻辑验证: 必须指向同区块内真实存在的 trace id (9/9 全部匹配)。EVM 内 event 的 parent trace.to_addr = event.contract_id; fee event 的 parent_trace_id 指向 root trace (handler 层产生, 无对应 EVM call frame) | PASS |
+| 5.1.7 | pos_in_parent_trace | number | 无对应。逻辑验证: 同一 parent 下 positions 无重复且按序排列 | PASS |
+| 5.1.8 | idx | number | 全局 log index, 递增 | PASS |
+
+### 5.2 event 类型覆盖
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 5.2.1 | Transfer event | selector=0xddf252ad..., topics 含 from/to | PASS |
+| 5.2.2 | 多 topic event | topics 数组长度 > 0 | PASS |
+| 5.2.3 | 无 topic event (anonymous) | selector="", topics=[] | 未覆盖 (链上未找到) |
+| 5.2.4 | fee Transfer log | contract_id 为 TIP-20 地址(0x20c0...), selector=Transfer | PASS |
+| 5.2.5 | events 总数 = eth_getTransactionReceipt logs 总数 | 含 EVM 内 log + handler fee log, per block 验证 | PASS (block 0x9a1eb0: 9=9, block 0x9a2040: 5=5) |
+
+### 5.3 ID 计算验证
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 5.3.1 | event id 算法 | id = MD5(parent_trace_id + pos_in_parent_trace), 手动计算验证 | PASS (expected=actual) |
+| 5.3.2 | id 全局唯一 | 同一区块内所有 event id (events + error_events) 无重复 | PASS (25 blocks batch test) |
+
+### 5.4 idx 全局递增验证
+
+验证方法: 收集同一区块内所有 events + error_events 的 idx 值，检查全局递增无重复。
+
+| # | 测试项 | 验证方法 | 结果 |
+|---|--------|---------|------|
+| 5.4.1 | idx 无重复 | 所有 event idx 排序后 unique 数量 = 总数量。block 0x9a1eb0: 9 unique/9 total; block 0x9a2040: 5/5 | PASS |
+| 5.4.2 | idx 全局递增 | idx 值 = [0, 1, 2, ..., N-1] 连续序列。block 0x9a1eb0: [0..8]; block 0x9a2040: [0..4] | PASS |
+| 5.4.3 | idx 跨 tx 连续 | 多 tx 区块 0x9a1eb0: tx0 idx=[0-4], tx1 idx=[5-6], tx2 idx=[7-8]，无间隔无重叠 | PASS |
+| 5.4.4 | fee event idx 不与 EVM event 重复 | block 0x9a1eb0 tx0: EVM idx=[0,1,2,3], fee idx=[4]，fee 在 EVM 之后 | PASS |
+
+---
+
+## 6. block_file.error_traces / error_events
+
+测试区块:
+- 0x9a2040 (含 1 笔 revert tx, status=0x0, revert 前无 EVM event)
+- 0x99e15c (含 1 笔 revert tx, status=0x0, revert 前有 6 个 EVM event — 触发 CR #2 bug 场景)
+- 0x9a1eb0 (全部成功, 含 AA tx)
+
+验证方法: 分类依据为 `eth_getTransactionReceipt.status` — status=0x0 的 tx 其 traces/events 进 error 列表, status=0x1 的进 success 列表。数量对比使用 `trace_transaction` 和 `eth_getTransactionReceipt.logs`。
+
+| # | 测试项 | 验证方法 | 结果 |
+|---|--------|---------|------|
+| 6.1 | revert tx traces → error_traces | `eth_getTransactionReceipt(revert_tx).status == 0x0` → 该 tx 的 traces 在 debankBlock.error_traces 中, 不在 traces 中 | PASS (1 条) |
+| 6.2 | revert tx events → error_events | 同上, 该 tx 的 fee log 在 error_events 中 | PASS (1 条) |
+| 6.3 | 成功 tx 不进 error | block 0x9a1eb0 全部 tx status=0x1 → error_traces=0, error_events=0 | PASS |
+| 6.4 | error_traces 字段完整 | jq 检查 error_traces[0] 与 traces[0] 字段结构一致 (18 个字段) | PASS |
+| 6.5 | error_events 字段完整 | jq 检查 error_events[0] 与 events[0] 字段结构一致 (8 个字段) | PASS |
+| 6.6 | traces + error_traces = trace_transaction | per tx: `trace_transaction` 返回条数 = debankBlock 中该 tx 的 traces + error_traces 条数 | PASS (4/4 txs) |
+| 6.7 | events + error_events = receipt logs | 无 revert+EVM 区块: `sum(receipt.logs.length)` = events + error_events。有 revert+EVM 区块: `success_events + revert_tx_receipt_logs = total_receipt_logs`（见已知差异 #2） | PASS (block 0x9a2040: 5=5, 200 blocks batch 验证) |
+| 6.8 | error 字段非空 | error_traces 中 error 字段 = "Reverted" (非空字符串) | PASS |
+| 6.9 | revert tx with EVM events: fee log 存在 | block 0x99e15c, tx `0x631c...d7bd`: revert 前 emit 6 个 event → 6 个 error_events (EVM) + 1 个 fee error_event (handler)。验证: error_events 中存在 contract_id=`0x20c0...0000` 的 fee Transfer log, 且 error_events 总数 = 6 (EVM) + 1 (fee) = 7 | PASS (fee_log=1, evm=6, total=7) |
+| 6.10 | revert tx with EVM events: event 总数一致 | block 0x99e15c: debankBlock error_events 数 = inspector 捕获的 EVM events 数 + receipt fee log 数 | PASS (6+1=7) |
+
+---
+
+## 7. block_file.storage_contracts
+
+验证方法: 与 debankBlock 自身的 traces (storage_change 字段) 交叉验证, 以及检查已知地址是否存在。
+
+| # | 测试项 | 验证方法 | 结果 |
+|---|--------|---------|------|
+| 7.1 | 类型 | jq `type == "array"` | PASS |
+| 7.2 | 含 SSTORE 合约 | debankBlock.traces 中 storage_change=true 的合约地址出现在 storage_contracts 中 | PASS |
+| 7.3 | 含 FeeManager | 检查 `0xfeec000000000000000000000000000000000000` 在列表中 | PASS |
+| 7.4 | 含 TIP-20 合约 | 检查 `0x20c0...` 前缀地址在列表中 | PASS |
+| 7.5 | 空区块 | block 1 (仅系统 tx): storage_contracts=[] | PASS |
+
+---
+
+## 8. state_diff (RLP-encoded BlockStorageDiff)
+
+RLP 解码验证使用 Python rlp 库，对 block 0x9a1eb0, 0x99b150, 0x0, 0x1 四个区块执行。
+
+### 8.1 结构验证
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 8.1.1 | RLP 可解码 | hex → bytes → RLP decode 成功 | PASS (4 个区块) |
+| 8.1.2 | hash | 与 debankBlock.header.stateRoot 一致 | PASS |
+| 8.1.3 | parent_hash | 与 eth_getBlockByNumber(parent).stateRoot 一致 | PASS |
+
+### 8.2 new_accounts
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 8.2.1 | address | H256, keccak256(原始地址), 非零 | PASS |
+| 8.2.2 | balance | U256, 合理数值 | PASS |
+| 8.2.3 | nonce | u64, >= 0 | PASS |
+| 8.2.4 | code_hash | H256, EOA 为 KECCAK_EMPTY, 合约为非空 hash | PASS |
+| 8.2.5 | 非空区块有 new_accounts | new_accounts=10 (block 0x9a1eb0) | PASS |
+
+### 8.3 storage_diffs
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 8.3.1 | address | H256, keccak256(合约地址) | PASS |
+| 8.3.2 | diffs[].index | H256, keccak256(storage slot) | PASS |
+| 8.3.3 | diffs[].value | U256, 新值 | PASS |
+| 8.3.4 | 含 fee storage 变化 | storage_diffs=7 (含 FeeManager/TIP-20 slot) | PASS |
+| 8.3.5 | 与 storage_contracts 对应 | storage_diffs 中的地址集合 ⊆ storage_contracts (hash 后) | PASS |
+
+### 8.4 new_codes
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 8.4.1 | code_hash | H256, = keccak256(code) | PASS |
+| 8.4.2 | code | Bytes, 合约 bytecode | PASS |
+| 8.4.3 | 只含新部署代码 | 已存在的合约代码不出现 (通过 pre_db 过滤) | PASS (非部署块 new_codes=0) |
+| 8.4.4 | 有部署区块 | block 0x99b150, new_codes=1 | PASS |
+
+### 8.5 deleted_accounts
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 8.5.1 | selfdestruct | Tempo 无 SELFDESTRUCT | 未覆盖 |
+| 8.5.2 | 正常区块 | deleted_accounts=0 | PASS |
+
+### 8.6 空区块
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 8.6.1 | block 1 (empty) | new_accounts=0, storage_diffs=0, new_codes=0, deleted=0 | PASS |
+
+---
+
+## 9. header (alloy Header)
+
+验证方法: 20 个字段逐一与 `eth_getBlockByNumber` 返回值对比 (jq 取字段值, 字符串精确匹配)。
+
+| # | 测试项 | 验证内容 | 结果 |
+|---|--------|---------|------|
+| 9.1 | hash | 与 eth_getBlockByNumber.hash 一致 | PASS |
+| 9.2 | parentHash | 一致 | PASS |
+| 9.3 | stateRoot | 一致 | PASS |
+| 9.4 | transactionsRoot | 一致 | PASS |
+| 9.5 | receiptsRoot | 一致 | PASS |
+| 9.6 | number | 一致 | PASS |
+| 9.7 | gasLimit | 一致 | PASS |
+| 9.8 | gasUsed | 一致 | PASS |
+| 9.9 | timestamp | 一致 | PASS |
+| 9.10 | baseFeePerGas | 一致 | PASS |
+| 9.11 | miner | 一致 | PASS |
+| 9.12 | logsBloom | 一致 | PASS |
+| 9.13 | nonce | 一致 (0x0000000000000000) | PASS |
+| 9.14 | mixHash | 一致 (0x0000...0000) | PASS |
+| 9.15 | sha3Uncles | 一致 (0x1dcc...9347) | PASS |
+| 9.16 | difficulty | 一致 (0x0) | PASS |
+| 9.17 | extraData | 一致 (0x) | PASS |
+| 9.18 | withdrawalsRoot | 一致 (0x56e8...b421) | PASS |
+| 9.19 | blobGasUsed | 一致 (0x0) | PASS |
+| 9.20 | excessBlobGas | 一致 (0x0) | PASS |
+
+注: `requestsHash` (alloy) vs `requestsRoot` (pipeline Go) JSON key 名不同，为 reth 系通用差异，所有消费方均不使用该字段。
+
+---
+
+## 10. validation_hash
+
+验证方法: jq 类型检查 + 幂等性验证 (同一 block_id 两次调用对比)。
+
+| # | 测试项 | 验证方法 | 结果 |
+|---|--------|---------|------|
+| 10.1 | 类型 | jq `type == "number"` | PASS |
+| 10.2 | 非零 | jq `!= 0`, 值=205047 | PASS |
+| 10.3 | 算法验证 | SHA1(所有 id 拼接) 取末 6 位 — 算法已在 Rust 代码和 Go pipeline 代码中一致实现 | 未执行 (代码级验证) |
+| 10.4 | 幂等 | 同一 block_id 两次调用 `trace_debankBlock`, 对比 validation_hash 值 | PASS (205047=205047) |
+
+---
+
+## 11. 特殊区块
+
+验证方法: 对不同类型区块调用 `trace_debankBlock`, 检查返回结构和字段值的合理性。
+
+| # | 测试项 | 验证方法 | 结果 |
+|---|--------|---------|------|
+| 11.1 | Genesis (block 0) | `trace_debankBlock("0x0")` → 检查 synthetic txs/traces 存在, state_diff 非空 | PASS (txs=15, traces=15, state_diff_len=58374) |
+| 11.2 | 空区块 (block 1) | `trace_debankBlock("0x1")` → 仅系统 tx, 无 events, state_diff 全空 | PASS |
+| 11.3 | Fee 区块 (0x9a1eb0) | 检查 events 含 `contract_id` 以 `0x20c0` 开头的 Transfer, storage_contracts 含 FeeManager 地址 | PASS |
+| 11.4 | AA tx 区块 (0x9a1eb0) | AA tx (type=0x76) 的 traces 在 traces 中 (非 error_traces), 基于 `eth_getTransactionReceipt.status=0x1` 分类 | PASS (2 条) |
+| 11.4a | AA tx root trace 分类 | AA tx 的 root trace (`trace_address=[]`) 在 traces 中而非 error_traces 中。验证: debankBlock traces 中 4 个 root trace, error_traces 中 0 个 | PASS |
+| 11.4b | AA tx root events 分类 | AA tx root trace 的直属 events (`parent_trace_id` = root trace id) 在 events 中 (4 个) 而非 error_events 中 (0 个) | PASS |
+| 11.5 | 多 tx 区块 | 检查 txs[].idx 从 0 递增 | PASS [0,1,2,3] |
+| 11.6 | CREATE 区块 (0x99b150) | traces 含 type="create", 与 `trace_transaction` 对比一致; state_diff.new_codes=1 | PASS |
+| 11.7 | 不存在的区块 | `trace_debankBlock("0xffffff00")` → 返回 JSON-RPC error | PASS ("block not found") |
+| 11.8 | 最新区块 | `trace_debankBlock("latest")` → 返回当前链头 | PASS (height > 10000000) |
+
+---
+
+## 12. 与 background-tracer 兼容性
+
+验证方法: 连续区块 parent_id 链验证 + 响应时间测量。background-tracer binary 不在 dev 机器上, dry-run 未执行。
+
+| # | 测试项 | 验证方法 | 结果 |
+|---|--------|---------|------|
+| 12.1 | JSON 可解析 | background-tracer 反序列化 DebankOutPut | 未执行 (需 binary) |
+| 12.2 | dry-run | `background-tracer dry-run --rpc-address=... --start-block=X --end-block=X+5` | 未执行 (需 binary) |
+| 12.3 | 连续区块 parent_id 链 | 连续调用 5 个 block (10100400-10100404), 检查每个 block.parent_id = 前一个 block.id | PASS |
+| 12.4 | 性能 | `time curl trace_debankBlock`, 单次调用耗时 | PASS (12ms < 5s) |
+
+---
+
+## 13. 批量回归测试
+
+镜像 `blockchain/tempo:e13d513`，200 个连续区块批量验证。
+
+| # | 测试项 | 覆盖区块 | 结果 |
+|---|--------|---------|------|
+| 13.1 | tx 数量一致 (debankBlock.txs vs eth_getBlockByNumber.transactions) | 200 blocks (10100000-10100199) | PASS (200/200) |
+| 13.2 | block hash 一致 | 200 blocks | PASS (200/200) |
+| 13.3 | event idx 全局递增无重复 | 200 blocks | PASS (200/200) |
+| 13.4 | trace 数量一致 (per tx, debankBlock vs trace_transaction) | 200 blocks, ~500 txs | PASS |
+| 13.5 | event 数量一致 (success_events + revert_tx_receipt_logs = total_receipt_logs) | 200 blocks | PASS |
+
+总计: 1557 项验证, 0 FAIL。
+
+注: event 公式为 `success_events + sum(revert_tx.receipt.logs.length) = total_receipt_logs`。revert tx 的 receipt 只含 fee log（EVM log 被回滚），fee log 可能来自不同 TIP-20 token 地址（0x20C0 前缀 + token 地址后缀，非固定 0x20c0...0000）。

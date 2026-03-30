@@ -7,7 +7,8 @@ use crate::{
     },
 };
 use debank_rpc::{
-    DebankEthExtApiServer, DebankPreApiServer, DebankEthExt, PreApi,
+    DebankEthExtApiServer, DebankPreApiServer, DebankTraceApiServer,
+    DebankEthExt, DebankTraceBlock, PreApi,
 };
 use alloy_primitives::B256;
 use reth_engine_local::LocalPayloadAttributesBuilder;
@@ -221,11 +222,14 @@ where
                 let pre_api = PreApi::new(eth_api.clone());
                 modules.merge_configured(pre_api.into_rpc())?;
 
-                let debank_eth_ext = DebankEthExt::new(eth_api);
+                let debank_eth_ext = DebankEthExt::new(eth_api.clone());
                 modules.merge_if_module_configured(
                     RethRpcModule::Eth,
                     debank_eth_ext.into_rpc(),
                 )?;
+
+                let debank_trace = DebankTraceBlock::new(eth_api);
+                modules.merge_configured(debank_trace.into_rpc())?;
 
                 Ok(())
             })
