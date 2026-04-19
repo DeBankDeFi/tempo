@@ -164,6 +164,17 @@ impl reth_cli::chainspec::ChainSpecParser for TempoChainSpecParser {
     }
 }
 
+/// Resolve a [`TempoChainSpec`] from a chain id.
+///
+/// Returns `None` for unknown chain ids.
+pub fn chainspec_from_chain_id(chain_id: u64) -> Option<Arc<TempoChainSpec>> {
+    match chain_id {
+        4217 => Some(PRESTO.clone()),
+        42431 => Some(MODERATO.clone()),
+        _ => None,
+    }
+}
+
 pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
         .expect("`./genesis/moderato.json` must be present and deserializable");
@@ -224,6 +235,7 @@ impl TempoChainSpec {
                 general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp % 1000,
                 shared_gas_limit: 0,
+                consensus_context: None,
                 inner,
             }),
             info,
@@ -235,6 +247,11 @@ impl TempoChainSpec {
     pub fn with_default_follow_url(mut self, url: &'static str) -> Self {
         self.default_follow_url = Some(url);
         self
+    }
+
+    /// Returns the moderato chainspec.
+    pub fn moderato() -> Self {
+        MODERATO.as_ref().clone()
     }
 
     /// Returns the mainnet chainspec.
@@ -251,8 +268,9 @@ impl From<ChainSpec> for TempoChainSpec {
             inner: spec.map_header(|inner| TempoHeader {
                 general_gas_limit: 0,
                 timestamp_millis_part: inner.timestamp % 1000,
-                inner,
                 shared_gas_limit: 0,
+                consensus_context: None,
+                inner,
             }),
             info: TempoGenesisInfo::default(),
             default_follow_url: None,
@@ -501,7 +519,15 @@ mod tests {
             // At and after T2 activation
             assert!(cs.is_t2_active_at_timestamp(1774965600));
             assert_eq!(cs.tempo_hardfork_at(1774965600), TempoHardfork::T2);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
+
+            // Before T3 activation (1777298400 = Apr 27th 2026 16:00 CEST)
+            assert!(!cs.is_t3_active_at_timestamp(1777298399));
+            assert_eq!(cs.tempo_hardfork_at(1777298399), TempoHardfork::T2);
+
+            // At and after T3 activation
+            assert!(cs.is_t3_active_at_timestamp(1777298400));
+            assert_eq!(cs.tempo_hardfork_at(1777298400), TempoHardfork::T3);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
         }
 
         #[test]
@@ -540,9 +566,15 @@ mod tests {
             // At and after T2 activation
             assert!(cs.is_t2_active_at_timestamp(1774537200));
             assert_eq!(cs.tempo_hardfork_at(1774537200), TempoHardfork::T2);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T2);
 
-            assert!(!cs.is_t3_active_at_timestamp(u64::MAX));
+            // Before T3 activation (1776780000 = Apr 21st 2026 16:00 CEST)
+            assert!(!cs.is_t3_active_at_timestamp(1776779999));
+            assert_eq!(cs.tempo_hardfork_at(1776779999), TempoHardfork::T2);
+
+            // At and after T3 activation
+            assert!(cs.is_t3_active_at_timestamp(1776780000));
+            assert_eq!(cs.tempo_hardfork_at(1776780000), TempoHardfork::T3);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
         }
 
         #[test]
@@ -554,6 +586,22 @@ mod tests {
             let moderato = super::super::TempoChainSpecParser::parse("moderato")
                 .expect("the moderato chainspec must always be well formed");
             assert_eq!(cs.inner.chain(), moderato.inner.chain());
+        }
+    }
+
+    #[test]
+    #[allow(clippy::expect_fun_call)]
+    fn chainspec_from_chain_id_roundtrips_supported_chains() {
+        use reth_chainspec::EthChainSpec;
+
+        for &name in super::SUPPORTED_CHAINS {
+            let spec =
+                super::chain_value_parser(name).expect(&format!("failed to parse chain `{name}`"));
+
+            let resolved = super::chainspec_from_chain_id(spec.chain().id())
+                .expect(&format!("failed to parse chain `{name}`"));
+
+            assert_eq!(spec.chain(), resolved.chain(), "chain mismatch for {name}");
         }
     }
 }

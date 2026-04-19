@@ -140,6 +140,7 @@ where
                         index: Some(tx_index as u64),
                         block_hash: Some(parent_hash),
                         block_number: Some(block_number),
+                        block_timestamp: Some(block_timestamp),
                         base_fee,
                     };
 
