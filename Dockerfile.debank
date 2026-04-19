@@ -3,7 +3,7 @@
 
 FROM rust:1.93-bookworm AS chef
 
-RUN cargo install cargo-chef sccache
+RUN cargo install --locked cargo-chef sccache
 
 WORKDIR /app
 
