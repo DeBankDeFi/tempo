@@ -252,7 +252,7 @@ where
         self.consensus_config = self
             .consensus_config
             .clone()
-            .with_execution_node(execution_node.node.clone());
+            .with_execution_node((*execution_node.node).clone());
         self.execution_node = Some(execution_node);
         debug!(%self.uid, "started execution node for testing node");
     }
@@ -470,7 +470,7 @@ where
         .with_metrics();
 
         let static_file_provider =
-            StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"), true)
+            StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"))
                 .expect("failed to open static files");
 
         let rocksdb = RocksDBProvider::builder(self.execution_node_datadir.join("rocksdb"))

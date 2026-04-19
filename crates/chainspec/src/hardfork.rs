@@ -242,6 +242,30 @@ impl TempoHardfork {
         crate::spec::TEMPO_T1_NEW_NONCE_KEY_GAS
     }
 
+    /// Returns the active hardfork at the given timestamp for the specified chain.
+    ///
+    /// Returns `None` if the chain ID is not a known Tempo chain.
+    pub const fn from_chain_and_timestamp(chain_id: u64, timestamp: u64) -> Option<Self> {
+        // Walk variants in reverse to find the latest active fork, mirroring
+        // `TempoHardforks::tempo_hardfork_at` but without needing a chainspec instance.
+        let variants = Self::VARIANTS;
+        let mut i = variants.len();
+        while i > 0 {
+            i -= 1;
+            let activation = match chain_id {
+                4217 => variants[i].mainnet_activation_timestamp(),
+                42431 => variants[i].moderato_activation_timestamp(),
+                _ => return None,
+            };
+            if let Some(ts) = activation
+                && timestamp >= ts
+            {
+                return Some(variants[i]);
+            }
+        }
+        Some(Self::Genesis)
+    }
+
     /// Retrieves the activation block for this hardfork on mainnet.
     pub const fn mainnet_activation_block(&self) -> Option<u64> {
         use crate::constants::mainnet::*;
@@ -253,7 +277,7 @@ impl TempoHardfork {
             Self::T1B => Some(MAINNET_T1B_BLOCK),
             Self::T1C => Some(MAINNET_T1C_BLOCK),
             Self::T2 => Some(MAINNET_T2_BLOCK),
-            Self::T3 => None,
+            Self::T3 => None, // not yet known
             Self::T4 => None,
         }
     }
@@ -269,7 +293,7 @@ impl TempoHardfork {
             Self::T1B => Some(MAINNET_T1B_TIMESTAMP),
             Self::T1C => Some(MAINNET_T1C_TIMESTAMP),
             Self::T2 => Some(MAINNET_T2_TIMESTAMP),
-            Self::T3 => None,
+            Self::T3 => Some(MAINNET_T3_TIMESTAMP),
             Self::T4 => None,
         }
     }
@@ -285,7 +309,7 @@ impl TempoHardfork {
             Self::T1B => Some(MODERATO_T1B_BLOCK),
             Self::T1C => Some(MODERATO_T1C_BLOCK),
             Self::T2 => Some(MODERATO_T2_BLOCK),
-            Self::T3 => None,
+            Self::T3 => None, // not yet known
             Self::T4 => None,
         }
     }
@@ -301,7 +325,7 @@ impl TempoHardfork {
             Self::T1B => Some(MODERATO_T1B_TIMESTAMP),
             Self::T1C => Some(MODERATO_T1C_TIMESTAMP),
             Self::T2 => Some(MODERATO_T2_TIMESTAMP),
-            Self::T3 => None,
+            Self::T3 => Some(MODERATO_T3_TIMESTAMP),
             Self::T4 => None,
         }
     }

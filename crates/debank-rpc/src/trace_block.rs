@@ -4,6 +4,7 @@
 //! and state diffs for consumption by background-tracer → S3/Kafka → leafage-evm.
 
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
+use reth_evm::ConfigureEvm;
 use std::str::FromStr;
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, B256, U256};
@@ -87,6 +88,8 @@ where
                 excess_blob_gas: block.excess_blob_gas(),
                 parent_beacon_block_root: block.parent_beacon_block_root(),
                 requests_hash: block.requests_hash(),
+                block_access_list_hash: block.block_access_list_hash(),
+                slot_number: block.slot_number(),
             },
             hash: block.hash(),
             total_difficulty: None,
@@ -291,10 +294,7 @@ where
                         Some(OpcodeFilter::new().enabled(OpCode::SSTORE));
                     let mut inspector = TracingInspector::new(trace_cfg);
 
-                    let tx_env = reth_evm::ConfigureEvm::tx_env(
-                        eth_api.evm_config(),
-                        &tx,
-                    );
+                    let tx_env = eth_api.evm_config().tx_env(&tx);
 
                     let revm::context::result::ResultAndState { result: exec_result, state } = eth_api
                         .inspect(&mut diff_db, evm_env.clone(), tx_env, &mut inspector)?;

@@ -77,6 +77,8 @@ pub struct Builder {
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     t2_time: Option<u64>,
+    t3_time: Option<u64>,
+    t4_time: Option<u64>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
 }
 
@@ -86,6 +88,8 @@ impl Builder {
             epoch_length: None,
             initial_dkg_outcome: None,
             t2_time: None,
+            t3_time: None,
+            t4_time: None,
             validators: None,
         }
     }
@@ -118,11 +122,21 @@ impl Builder {
         }
     }
 
+    pub fn with_t3_time(self, t3_time: Option<u64>) -> Self {
+        Self { t3_time, ..self }
+    }
+
+    pub fn with_t4_time(self, t4_time: Option<u64>) -> Self {
+        Self { t4_time, ..self }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             epoch_length,
             initial_dkg_outcome,
             t2_time,
+            t3_time,
+            t4_time,
             validators,
         } = self;
 
@@ -152,6 +166,20 @@ impl Builder {
             .extra_fields
             .insert_value("t2Time".to_string(), t2_time)
             .unwrap();
+        if let Some(t3_time) = t3_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t3Time".to_string(), t3_time)
+                .unwrap();
+        }
+        if let Some(t4_time) = t4_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t4Time".to_string(), t4_time)
+                .unwrap();
+        }
 
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
 
@@ -270,6 +298,8 @@ pub struct ExecutionNodeConfig {
     pub validator_key: Option<B256>,
     /// Feed state handle for consensus RPC (if validator).
     pub feed_state: Option<FeedStateHandle>,
+    /// Share the engine's sparse trie pipeline with the payload builder.
+    pub share_sparse_trie_with_payload_builder: bool,
 }
 
 impl ExecutionNodeConfig {
@@ -283,6 +313,7 @@ impl ExecutionNodeConfig {
             secret_key: B256::random(),
             validator_key: None,
             feed_state: None,
+            share_sparse_trie_with_payload_builder: false,
         }
     }
 }
@@ -1043,7 +1074,7 @@ impl ExecutionRuntimeHandle {
 /// avoids the type parameters.
 pub struct ExecutionNode {
     /// All handles to interact with the launched node instances and services.
-    pub node: TempoFullNode,
+    pub node: Box<TempoFullNode>,
     /// The [`Runtime`] that drives the node's services.
     pub runtime: Runtime,
     /// The exist future that resolves when the node's engine future resolves.
@@ -1143,6 +1174,12 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     rocksdb: Option<RocksDBProvider>,
 ) -> eyre::Result<ExecutionNode> {
     println!("launching node at {}", datadir.as_ref().display());
+    let ExecutionNodeConfig {
+        secret_key,
+        validator_key,
+        feed_state,
+        share_sparse_trie_with_payload_builder,
+    } = config;
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
             RpcServerArgs::default()
@@ -1164,12 +1201,13 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         .apply(|mut c| {
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();
-            c.network.p2p_secret_key_hex = Some(config.secret_key);
+            c.network.p2p_secret_key_hex = Some(secret_key);
+            c.engine.share_sparse_trie_with_payload_builder =
+                share_sparse_trie_with_payload_builder;
             c
         });
 
-    let tempo_node = TempoNode::default().with_validator_key(config.validator_key);
-    let feed_state = config.feed_state;
+    let tempo_node = TempoNode::default().with_validator_key(validator_key);
 
     let node_handle = if let Some(rocksdb) = rocksdb {
         NodeBuilder::new(node_config)
@@ -1197,7 +1235,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     })?;
 
     Ok(ExecutionNode {
-        node: node_handle.node,
+        node: Box::new(node_handle.node),
         runtime,
         exit_fut: node_handle.node_exit_future,
     })
