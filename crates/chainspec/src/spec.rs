@@ -1,16 +1,12 @@
+pub use crate::constants::gas::*;
+
 use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
-use alloy_evm::{
-    eth::spec::EthExecutorSpec,
-    revm::interpreter::gas::{
-        COLD_SLOAD_COST as COLD_SLOAD, SSTORE_SET, WARM_SSTORE_RESET,
-        WARM_STORAGE_READ_COST as WARM_SLOAD,
-    },
-};
+use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use once_cell as _;
@@ -26,48 +22,9 @@ use reth_network_peers::NodeRecord;
 use std::sync::LazyLock;
 use tempo_primitives::TempoHeader;
 
-/// T0 base fee: 10 billion attodollars (1×10^10)
-///
-/// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
-/// Basefee is denominated in attodollars.
-pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
-
-/// T1 base fee: 20 billion attodollars (2×10^10)
-///
-/// Attodollars are the atomic gas accounting units at 10^-18 USD precision.
-/// Basefee is denominated in attodollars.
-///
-/// At this basefee, a standard TIP-20 transfer (~50,000 gas) costs:
-/// - Gas: 50,000 × 20 billion attodollars/gas = 1 quadrillion attodollars
-/// - Tokens: 1 quadrillion attodollars / 10^12 = 1,000 microdollars
-/// - Economic: 1,000 microdollars = 0.001 USD = 0.1 cents
-pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
-
-/// [TIP-1010] general (non-payment) gas limit: 30 million gas per block.
-/// Cap for non-payment transactions.
-///
-/// [TIP-1010]: <https://docs.tempo.xyz/protocol/tips/tip-1010>
-pub const TEMPO_T1_GENERAL_GAS_LIMIT: u64 = 30_000_000;
-
-/// TIP-1010 per-transaction gas limit cap: 30 million gas.
-/// Allows maximum-sized contract deployments under [TIP-1000] state creation costs.
-///
-/// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
-pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
-
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
-
-/// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset)
-pub const TEMPO_T1_EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD + WARM_SSTORE_RESET;
-/// T2 adds 2 warm SLOADs for the extended nonce key lookup
-pub const TEMPO_T2_EXISTING_NONCE_KEY_GAS: u64 = TEMPO_T1_EXISTING_NONCE_KEY_GAS + 2 * WARM_SLOAD;
-
-/// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero)
-pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + SSTORE_SET;
-/// T2 adds 2 warm SLOADs for the extended nonce key lookup
-pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -100,6 +57,12 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T4 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t4_time: Option<u64>,
+    /// Activation timestamp for T5 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t5_time: Option<u64>,
+    /// Activation timestamp for T6 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t6_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -128,6 +91,8 @@ impl TempoGenesisInfo {
             TempoHardfork::T2 => self.t2_time,
             TempoHardfork::T3 => self.t3_time,
             TempoHardfork::T4 => self.t4_time,
+            TempoHardfork::T5 => self.t5_time,
+            TempoHardfork::T6 => self.t6_time,
         }
     }
 }
@@ -527,7 +492,17 @@ mod tests {
             // At and after T3 activation
             assert!(cs.is_t3_active_at_timestamp(1777298400));
             assert_eq!(cs.tempo_hardfork_at(1777298400), TempoHardfork::T3);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
+
+            // Before T4 activation (1779112800 = May 18th 2026 16:00 CEST)
+            assert!(!cs.is_t4_active_at_timestamp(1779112799));
+            assert_eq!(cs.tempo_hardfork_at(1779112799), TempoHardfork::T3);
+
+            // At and after T4 activation
+            assert!(cs.is_t4_active_at_timestamp(1779112800));
+            assert_eq!(cs.tempo_hardfork_at(1779112800), TempoHardfork::T4);
+            assert!(!cs.is_t5_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T4);
         }
 
         #[test]
@@ -574,7 +549,17 @@ mod tests {
             // At and after T3 activation
             assert!(cs.is_t3_active_at_timestamp(1776780000));
             assert_eq!(cs.tempo_hardfork_at(1776780000), TempoHardfork::T3);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T3);
+
+            // Before T4 activation (1778767200 = May 14th 2026 16:00 CEST)
+            assert!(!cs.is_t4_active_at_timestamp(1778767199));
+            assert_eq!(cs.tempo_hardfork_at(1778767199), TempoHardfork::T3);
+
+            // At and after T4 activation
+            assert!(cs.is_t4_active_at_timestamp(1778767200));
+            assert_eq!(cs.tempo_hardfork_at(1778767200), TempoHardfork::T4);
+            assert!(!cs.is_t5_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T4);
         }
 
         #[test]

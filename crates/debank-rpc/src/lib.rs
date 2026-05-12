@@ -11,11 +11,11 @@ pub mod trace_block;
 pub mod types;
 
 // Re-export key types for registration
+pub use debank_trace::DebankOutPut;
 pub use multi_call::DebankEthExt;
 pub use pre::PreApi;
 pub use trace_block::DebankTraceBlock;
 pub use types::{MultiCallResp, PreResult};
-pub use debank_trace::DebankOutPut;
 
 use alloy_eips::BlockId;
 use alloy_rpc_types_eth::{BlockOverrides, state::StateOverride};

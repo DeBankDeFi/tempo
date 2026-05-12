@@ -28,7 +28,6 @@ impl<Eth> PreApi<Eth> {
     }
 }
 
-
 impl<Eth> PreApi<Eth>
 where
     Eth: EthApiTypes + TraceExt + 'static,
@@ -57,7 +56,9 @@ where
 
             match result {
                 revm::context::result::ExecutionResult::Success {
-                    gas, logs: exec_logs, ..
+                    gas,
+                    logs: exec_logs,
+                    ..
                 } => {
                     let traces = inspector
                         .into_parity_builder()
@@ -82,7 +83,7 @@ where
                         trace: traces,
                         logs,
                         error: None,
-                        gas_used: gas.used(),
+                        gas_used: gas.tx_gas_used(),
                     })
                 }
                 revm::context::result::ExecutionResult::Halt { reason, .. } => Err(PreError {
@@ -144,8 +145,13 @@ where
                         base_fee,
                     };
 
-                    let res =
-                        this.trace_transaction(current_evm_env, tx_env, &mut db, tx_info, block_timestamp);
+                    let res = this.trace_transaction(
+                        current_evm_env,
+                        tx_env,
+                        &mut db,
+                        tx_info,
+                        block_timestamp,
+                    );
                     results.push(res);
                 }
 
@@ -168,9 +174,15 @@ where
         state_overrides: Option<StateOverride>,
         block_overrides: Option<Box<BlockOverrides>>,
     ) -> RpcResult<Vec<PreResult>> {
-        Self::trace_many(self, transactions, block_id, state_overrides, block_overrides)
-            .await
-            .map_err(Into::into)
+        Self::trace_many(
+            self,
+            transactions,
+            block_id,
+            state_overrides,
+            block_overrides,
+        )
+        .await
+        .map_err(Into::into)
     }
 }
 

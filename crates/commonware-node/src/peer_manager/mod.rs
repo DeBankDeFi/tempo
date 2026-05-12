@@ -26,6 +26,8 @@
 //! overall peer set `{dealers, players, active validators}` together with
 //! addresses.
 
+use std::sync::Arc;
+
 use commonware_consensus::types::{FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::AddressableManager;
@@ -39,18 +41,13 @@ mod ingress;
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
-use crate::executor;
-
 /// Configuration of the peer manager actor.
 pub(crate) struct Config<TOracle> {
     /// The mailbox to the P2P network to register the peer sets.
     pub(crate) oracle: TOracle,
     /// A handle to the full execution node to read block headers and look up
     /// the Validator Config contract
-    pub(crate) execution_node: TempoFullNode,
-    /// The mailbox to the executor actor. Used to check if the executor has
-    /// already finalized a block at a given height.
-    pub(crate) executor: executor::Mailbox,
+    pub(crate) execution_node: Arc<TempoFullNode>,
     /// The  epoch strategy used by the node.
     pub(crate) epoch_strategy: FixedEpocher,
     /// The last finalized height according to the consensus layer (marshal).
