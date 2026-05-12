@@ -21,8 +21,8 @@
 | 1.1 | 基础 balanceOf (block latest) | **PASS** | code=0, camelCase 字段, gasUsed=271432, timeCost=0.039s |
 | 1.3 | 0xeeee balanceOf | **PASS** | code=0, result=0x00...00 |
 | 1.4 | 0xeeee decimals | **PASS** | code=0, result=0x12 (18) |
-| 1.5 | 0xeeee totalSupply | **PASS** | code=0, result=0x01（注：v1.6.0 baseline 报告"返回 1e18"是文档错误，实际 `U256::from(1u32)`，本次与代码一致） |
-| 1.6 | 0xeeee 未知 selector | **PASS** | code=-40001, err="method not found"（v1.6.0 baseline "no method with id: 0xdeadbeef" 但同 code，message 来自上游 revm，非 regression） |
+| 1.5 | 0xeeee totalSupply | **PASS** | code=0, result=0x01。详见下方"v1.6.0 baseline 文档差异确认" |
+| 1.6 | 0xeeee 未知 selector | **PASS** | code=-40001, err="method not found"。详见下方"v1.6.0 baseline 文档差异确认" |
 | 1.10 | 空请求 [] | **PASS** | results=[], stats 完整 |
 | 1.11 | genesis block 0x0 | **PASS** | code=0, blockNum=0 |
 
@@ -122,6 +122,41 @@ block 0x9a1eb0 第 3 笔 tx 是 AA tx（type=0x76），eth_getBlockByNumber 报�
 - **T4 专项前置**: pre-T4 行为正确，consensus_context 不污染 blockfile
 - **节点状态**: 启动正常、持续 follow 同步
 - **升级结论**: **v1.7.0-debank Dev pre-T4 验证全部通过**，可推进 prod 上线流程
+
+## 附录：v1.6.0 baseline 文档差异确认
+
+`docs/test-report-dev.md`（v1.6.0 baseline）里有两处描述与 v1.7.0 不符，经源码 + 真实镜像两层验证，确认是 **baseline 文档笔误**，运行时行为从未变化：
+
+### A. 0xeeee totalSupply 返回值
+
+| 维度 | 内容 |
+|------|------|
+| baseline doc 描述 | `code=0, 返回 1e18` |
+| v1.6.0-debank 源码 (`crates/debank-rpc/src/erc20_handle.rs`) | `result: Bytes::from(U256::from(1u32).to_be_bytes_vec())` |
+| v1.6.0-debank 单测 (同文件 `mod tests`) | `assert_eq!(U256::from_be_slice(&res.result), U256::from(1u32))`，**断言返回 1** |
+| **实际跑 v1.6.0-debank 镜像** | `result: "0x...0001"`（=1） |
+| **实际跑 v1.7.0 d6e55f6 镜像** | `result: "0x...0001"`（=1） |
+| 源码 diff `git diff v1.6.0-debank HEAD -- crates/debank-rpc/src/erc20_handle.rs` | 仅 cargo fmt 空白差异 |
+
+### B. 0xeeee 未知 selector 错误消息
+
+| 维度 | 内容 |
+|------|------|
+| baseline doc 描述 | `code=-40001, err="no method with id: 0xdeadbeef"` |
+| 全仓库 grep `"no method with id"` | **0 hit**（任何 tag/branch/历史 commit 都没出现过这字符串） |
+| v1.6.0-debank 源码 fallback 分支 | `err: "method not found".to_string()` |
+| v1.7.0 同源码 | 完全相同 |
+| **实际跑 v1.6.0-debank 镜像** | `code: -40001, err: "method not found"` |
+| **实际跑 v1.7.0 d6e55f6 镜像** | `code: -40001, err: "method not found"` |
+
+### 验证方法
+1. `git diff v1.6.0-debank HEAD -- crates/debank-rpc/src/erc20_handle.rs` 看源码无逻辑变化
+2. `git log --all -S 'no method with id'` 看历史从无该字符串
+3. SSH dev 机切镜像 tag `v1.6.0-debank` 跑同样请求，再切回 `d6e55f6` 跑同样请求，对比响应 byte-identical
+
+**结论**：两处都是 v1.6.0 baseline 报告写作时口语化/记忆失准导致的文档错误，跟 v1.7.0 升级无关。本次 v1.7.0 dev 验证的 1.5 / 1.6 仍判 PASS。
+
+---
 
 ## 待 post-T4 时段补充
 
