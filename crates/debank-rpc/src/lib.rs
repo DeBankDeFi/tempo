@@ -2,6 +2,11 @@
 //!
 //! Provides `pre_traceMany`, `eth_multiCall`, and `trace_debankBlock` endpoints.
 
+// `multi_call` has 8 params dictated by the deployed RPC schema; we can't merge them.
+// `#[allow]` on the trait method doesn't reach into jsonrpsee::rpc macro-generated impl,
+// so allow at module scope.
+#![allow(clippy::too_many_arguments)]
+
 pub mod debank_trace;
 pub mod erc20_handle;
 pub mod multi_call;
@@ -11,11 +16,11 @@ pub mod trace_block;
 pub mod types;
 
 // Re-export key types for registration
+pub use debank_trace::DebankOutPut;
 pub use multi_call::DebankEthExt;
 pub use pre::PreApi;
 pub use trace_block::DebankTraceBlock;
 pub use types::{MultiCallResp, PreResult};
-pub use debank_trace::DebankOutPut;
 
 use alloy_eips::BlockId;
 use alloy_rpc_types_eth::{BlockOverrides, state::StateOverride};

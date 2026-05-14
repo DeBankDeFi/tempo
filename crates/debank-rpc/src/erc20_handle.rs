@@ -101,24 +101,26 @@ mod tests {
 
     impl MockDb {
         fn new() -> Self {
-            Self { accounts: HashMap::new() }
+            Self {
+                accounts: HashMap::new(),
+            }
         }
 
         fn insert(&mut self, addr: Address, balance: U256) {
-            self.accounts.insert(addr, AccountInfo {
-                balance,
-                ..Default::default()
-            });
+            self.accounts.insert(
+                addr,
+                AccountInfo {
+                    balance,
+                    ..Default::default()
+                },
+            );
         }
     }
 
     impl DatabaseRef for MockDb {
         type Error = std::convert::Infallible;
 
-        fn basic_ref(
-            &self,
-            address: Address,
-        ) -> Result<Option<AccountInfo>, Self::Error> {
+        fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
             Ok(self.accounts.get(&address).cloned())
         }
 
@@ -129,11 +131,7 @@ mod tests {
             Ok(Default::default())
         }
 
-        fn storage_ref(
-            &self,
-            _: Address,
-            _: U256,
-        ) -> Result<U256, Self::Error> {
+        fn storage_ref(&self, _: Address, _: U256) -> Result<U256, Self::Error> {
             Ok(U256::ZERO)
         }
 
@@ -181,7 +179,9 @@ mod tests {
     fn balance_of_input_too_short() {
         let db = MockDb::new();
         // selector + only 10 bytes (need 32)
-        let input = vec![0x70, 0xa0, 0x82, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let input = vec![
+            0x70, 0xa0, 0x82, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
         let res = eth_erc20_handle(&db, Some(&input));
         assert_eq!(res.code, ERR_ARGS);
         assert!(res.err.contains("too short"));

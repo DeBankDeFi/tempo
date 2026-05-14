@@ -4,24 +4,26 @@
 //! and state diffs for consumption by background-tracer → S3/Kafka → leafage-evm.
 
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
-use reth_evm::ConfigureEvm;
-use std::str::FromStr;
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, B256, U256};
 use alloy_rpc_types_eth::Header;
 use jsonrpsee::core::RpcResult;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
+use reth_evm::ConfigureEvm;
 use reth_primitives_traits::BlockBody;
 use reth_provider::ChainSpecProvider;
+use reth_revm::{State, database::StateProviderDatabase};
 use reth_rpc_eth_api::{
     EthApiTypes,
-    helpers::{EthBlocks, EthTransactions, LoadBlock, LoadReceipt, LoadState, SpawnBlocking, TraceExt},
+    helpers::{
+        EthBlocks, EthTransactions, LoadBlock, LoadReceipt, LoadState, SpawnBlocking, TraceExt,
+    },
 };
 use reth_rpc_eth_types::{EthApiError, cache::db::StateProviderTraitObjWrapper};
-use reth_revm::{State, database::StateProviderDatabase};
-use revm::bytecode::opcode::OpCode;
 use revm::DatabaseCommit;
+use revm::bytecode::opcode::OpCode;
 use revm_inspectors::tracing::{OpcodeFilter, TracingInspector, TracingInspectorConfig};
+use std::str::FromStr;
 
 use crate::debank_trace::*;
 use crate::state_diff_db::StateDiffTraceDB;
@@ -40,7 +42,14 @@ impl<Eth> DebankTraceBlock<Eth> {
 
 impl<Eth> DebankTraceBlock<Eth>
 where
-    Eth: EthApiTypes + EthBlocks + LoadBlock + LoadReceipt + LoadState + SpawnBlocking + TraceExt + 'static,
+    Eth: EthApiTypes
+        + EthBlocks
+        + LoadBlock
+        + LoadReceipt
+        + LoadState
+        + SpawnBlocking
+        + TraceExt
+        + 'static,
     Eth::Provider: ChainSpecProvider<ChainSpec: EthChainSpec + EthereumHardforks>,
 {
     /// Build `DebankOutPut` for the given block.
@@ -143,7 +152,8 @@ where
             let is_aa = tx_json.get("type").and_then(|t| t.as_str()) == Some("0x76");
 
             let parse_hex_u64 = |v: &serde_json::Value| -> Option<u64> {
-                v.as_str().and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                v.as_str()
+                    .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
             };
 
             let mut dtx = DebankTransaction {
@@ -169,37 +179,47 @@ where
                 dtx.to = Address::ZERO;
                 dtx.input = Default::default();
                 dtx.value = U256::ZERO;
-                dtx.chain_id = tx_json.get("chainId")
-                    .and_then(|v| parse_hex_u64(v));
-                dtx.calls = tx_json.get("calls")
+                dtx.chain_id = tx_json.get("chainId").and_then(&parse_hex_u64);
+                dtx.calls = tx_json
+                    .get("calls")
                     .and_then(|v| serde_json::from_value(v.clone()).ok());
-                dtx.fee_token = tx_json.get("feeToken")
+                dtx.fee_token = tx_json
+                    .get("feeToken")
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse().ok());
-                dtx.nonce_key = tx_json.get("nonceKey")
+                dtx.nonce_key = tx_json
+                    .get("nonceKey")
                     .and_then(|v| v.as_str())
                     .and_then(|s| U256::from_str(s).ok());
-                dtx.valid_before = tx_json.get("validBefore").and_then(|v| parse_hex_u64(v));
-                dtx.valid_after = tx_json.get("validAfter").and_then(|v| parse_hex_u64(v));
+                dtx.valid_before = tx_json.get("validBefore").and_then(&parse_hex_u64);
+                dtx.valid_after = tx_json.get("validAfter").and_then(parse_hex_u64);
                 // Signature JSON has two formats:
                 // - v2 keychain: {signature: {type, r, s, ...}, version, keyId, userAddress}
                 // - direct: {type, r, s, pubKeyX, pubKeyY, webauthnData}
-                dtx.signature_type = tx_json.get("signature")
+                dtx.signature_type = tx_json
+                    .get("signature")
                     .and_then(|sig| {
-                        sig.get("signature").and_then(|inner| inner.get("type"))
+                        sig.get("signature")
+                            .and_then(|inner| inner.get("type"))
                             .or_else(|| sig.get("type"))
                     })
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 dtx.signature = tx_json.get("signature").cloned();
-                dtx.fee_payer_signature = tx_json.get("feePayerSignature")
-                    .filter(|v| !v.is_null()).cloned();
-                dtx.key_authorization = tx_json.get("keyAuthorization")
-                    .filter(|v| !v.is_null()).cloned();
-                dtx.aa_authorization_list = tx_json.get("aaAuthorizationList")
+                dtx.fee_payer_signature = tx_json
+                    .get("feePayerSignature")
+                    .filter(|v| !v.is_null())
+                    .cloned();
+                dtx.key_authorization = tx_json
+                    .get("keyAuthorization")
+                    .filter(|v| !v.is_null())
+                    .cloned();
+                dtx.aa_authorization_list = tx_json
+                    .get("aaAuthorizationList")
                     .and_then(|v| v.as_array().cloned())
                     .filter(|v| !v.is_empty());
-                dtx.access_list = tx_json.get("accessList")
+                dtx.access_list = tx_json
+                    .get("accessList")
                     .and_then(|v| v.as_array().cloned())
                     .filter(|v| !v.is_empty());
             }
@@ -211,26 +231,36 @@ where
         // ReceiptResponse trait doesn't expose logs(). Extract via serde
         // round-trip to alloy_rpc_types_eth::Log (a standard, stable type).
         let tx_statuses: Vec<bool> = receipts.iter().map(|r| r.status()).collect();
-        let receipt_logs_per_tx: Vec<Vec<DebankEvent>> = receipts.iter().map(|receipt| {
-            let logs: Vec<alloy_rpc_types_eth::Log> = serde_json::to_value(receipt).ok()
-                .and_then(|v| v.get("logs").cloned())
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default();
-            logs.iter().enumerate().map(|(log_idx, log)| {
-                let selector = log.topics().first()
-                    .map(|h| h.to_string()).unwrap_or_default();
-                let topics: Vec<String> = log.topics().iter().skip(1)
-                    .map(|h| h.to_string()).collect();
-                DebankEvent {
-                    contract_id: log.address(),
-                    selector,
-                    topics,
-                    data: log.data().data.clone(),
-                    idx: log_idx,
-                    ..Default::default()
-                }
-            }).collect()
-        }).collect();
+        let receipt_logs_per_tx: Vec<Vec<DebankEvent>> = receipts
+            .iter()
+            .map(|receipt| {
+                let logs: Vec<alloy_rpc_types_eth::Log> = serde_json::to_value(receipt)
+                    .ok()
+                    .and_then(|v| v.get("logs").cloned())
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default();
+                logs.iter()
+                    .enumerate()
+                    .map(|(log_idx, log)| {
+                        let selector = log
+                            .topics()
+                            .first()
+                            .map(|h| h.to_string())
+                            .unwrap_or_default();
+                        let topics: Vec<String> =
+                            log.topics().iter().skip(1).map(|h| h.to_string()).collect();
+                        DebankEvent {
+                            contract_id: log.address(),
+                            selector,
+                            topics,
+                            data: log.data().data.clone(),
+                            idx: log_idx,
+                            ..Default::default()
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
 
         let parent_hash = block.parent_hash();
         let parent_block = self.eth_api.recovered_block(parent_hash.into()).await?;
@@ -268,20 +298,27 @@ where
                 let state2 = eth_api.state_at_block_id(parent_block_id).await?;
 
                 let pre_db = State::builder()
-                    .with_database(StateProviderDatabase::new(
-                        StateProviderTraitObjWrapper(state1),
-                    ))
+                    .with_database(StateProviderDatabase::new(StateProviderTraitObjWrapper(
+                        state1,
+                    )))
                     .build();
                 let cache_db = State::builder()
-                    .with_database(StateProviderDatabase::new(
-                        StateProviderTraitObjWrapper(state2),
-                    ))
+                    .with_database(StateProviderDatabase::new(StateProviderTraitObjWrapper(
+                        state2,
+                    )))
                     .build();
                 let mut diff_db = StateDiffTraceDB::new(cache_db);
 
                 let log_index = std::cell::RefCell::new(0usize);
                 // (traces, error_traces, events, error_events, receipt_log_count)
-                let mut all_results: Vec<(Vec<DebankTrace>, Vec<DebankTrace>, Vec<DebankEvent>, Vec<DebankEvent>, usize)> = Vec::new();
+                type PerTxResult = (
+                    Vec<DebankTrace>,
+                    Vec<DebankTrace>,
+                    Vec<DebankEvent>,
+                    Vec<DebankEvent>,
+                    usize,
+                );
+                let mut all_results: Vec<PerTxResult> = Vec::new();
 
                 for (idx, tx) in block.transactions_recovered().enumerate() {
                     let tx_hash = tx_hashes[idx];
@@ -294,10 +331,12 @@ where
                         Some(OpcodeFilter::new().enabled(OpCode::SSTORE));
                     let mut inspector = TracingInspector::new(trace_cfg);
 
-                    let tx_env = eth_api.evm_config().tx_env(&tx);
+                    let tx_env = eth_api.evm_config().tx_env(tx);
 
-                    let revm::context::result::ResultAndState { result: exec_result, state } = eth_api
-                        .inspect(&mut diff_db, evm_env.clone(), tx_env, &mut inspector)?;
+                    let revm::context::result::ResultAndState {
+                        result: exec_result,
+                        state,
+                    } = eth_api.inspect(&mut diff_db, evm_env.clone(), tx_env, &mut inspector)?;
                     diff_db.commit(state);
 
                     let exec_logs = exec_result.into_logs();
@@ -320,65 +359,85 @@ where
                     // and receipt_log_count (fee only) < N would cause fee log loss.
                     let evm_event_count = events.len() + error_events.len();
                     let tx_reverted = !tx_statuses_clone.get(idx).copied().unwrap_or(true);
-                    let receipt_logs = receipt_logs_per_tx.get(idx)
-                        .cloned().unwrap_or_default();
+                    let receipt_logs = receipt_logs_per_tx.get(idx).cloned().unwrap_or_default();
 
-                    all_results.push((traces, error_traces, events, error_events, receipt_logs.len()));
+                    all_results.push((
+                        traces,
+                        error_traces,
+                        events,
+                        error_events,
+                        receipt_logs.len(),
+                    ));
 
                     // Determine fee log source: exec_logs for success, receipt for revert.
                     // Use block-global log_index for idx (not tx-local offset).
                     let extra_log_source: Vec<DebankEvent> = if tx_reverted {
                         // Revert path: all receipt logs are fee logs
-                        receipt_logs.iter().map(|rl| {
-                            let current_idx = *log_index.borrow();
-                            *log_index.borrow_mut() += 1;
-                            DebankEvent {
-                                contract_id: rl.contract_id,
-                                selector: rl.selector.clone(),
-                                topics: rl.topics.clone(),
-                                data: rl.data.clone(),
-                                idx: current_idx,
-                                ..Default::default()
-                            }
-                        }).collect()
+                        receipt_logs
+                            .iter()
+                            .map(|rl| {
+                                let current_idx = *log_index.borrow();
+                                *log_index.borrow_mut() += 1;
+                                DebankEvent {
+                                    contract_id: rl.contract_id,
+                                    selector: rl.selector.clone(),
+                                    topics: rl.topics.clone(),
+                                    data: rl.data.clone(),
+                                    idx: current_idx,
+                                    ..Default::default()
+                                }
+                            })
+                            .collect()
                     } else if exec_logs.len() > evm_event_count {
                         // Success path: use exec_logs beyond inspector-captured events
-                        exec_logs[evm_event_count..].iter().map(|log| {
-                            let selector = log.topics().first()
-                                .map(|h| h.to_string()).unwrap_or_default();
-                            let topics = if log.topics().len() > 1 {
-                                log.topics()[1..].iter().map(|h| h.to_string()).collect()
-                            } else {
-                                vec![]
-                            };
-                            let current_idx = *log_index.borrow();
-                            *log_index.borrow_mut() += 1;
-                            DebankEvent {
-                                contract_id: log.address,
-                                selector,
-                                topics,
-                                data: log.data.data.clone(),
-                                idx: current_idx,
-                                ..Default::default()
-                            }
-                        }).collect()
+                        exec_logs[evm_event_count..]
+                            .iter()
+                            .map(|log| {
+                                let selector = log
+                                    .topics()
+                                    .first()
+                                    .map(|h| h.to_string())
+                                    .unwrap_or_default();
+                                let topics = if log.topics().len() > 1 {
+                                    log.topics()[1..].iter().map(|h| h.to_string()).collect()
+                                } else {
+                                    vec![]
+                                };
+                                let current_idx = *log_index.borrow();
+                                *log_index.borrow_mut() += 1;
+                                DebankEvent {
+                                    contract_id: log.address,
+                                    selector,
+                                    topics,
+                                    data: log.data.data.clone(),
+                                    idx: current_idx,
+                                    ..Default::default()
+                                }
+                            })
+                            .collect()
                     } else {
                         vec![]
                     };
 
                     if !extra_log_source.is_empty() {
                         let last = all_results.last().unwrap();
-                        let root_trace_id = last.0.first()
+                        let root_trace_id = last
+                            .0
+                            .first()
                             .or(last.1.first())
                             .map(|t| t.id.clone())
                             .unwrap_or_default();
                         // Compute base pos from root trace's subtraces + all events
                         // already attached to it, to avoid pos collision with EVM events.
-                        let root_subtraces = last.0.first()
+                        let root_subtraces = last
+                            .0
+                            .first()
                             .or(last.1.first())
                             .map(|t| t.subtraces)
                             .unwrap_or(0);
-                        let existing_events_on_root = last.2.iter()
+                        let existing_events_on_root = last
+                            .2
+                            .iter()
                             .chain(last.3.iter())
                             .filter(|e| e.parent_trace_id == root_trace_id)
                             .count();
@@ -394,10 +453,8 @@ where
                     }
                 }
 
-                let change_addresses =
-                    get_storage_contracts_from_cache(&diff_db.diff.cache);
-                let state_diff =
-                    get_storage_diffs_from_cache(diff_db.diff.cache, pre_db);
+                let change_addresses = get_storage_contracts_from_cache(&diff_db.diff.cache);
+                let state_diff = get_storage_diffs_from_cache(diff_db.diff.cache, pre_db);
                 Ok((all_results, state_diff, change_addresses))
             })
             .await?;
@@ -448,10 +505,18 @@ where
         // but classification may split events between events/error_events,
         // leaving gaps in idx. Sort by current idx (preserves original
         // per-block order) and reassign [0, 1, 2, ...] sequentially.
-        let mut idx_map: Vec<(usize, bool, usize)> = block_file.events.iter().enumerate()
+        let mut idx_map: Vec<(usize, bool, usize)> = block_file
+            .events
+            .iter()
+            .enumerate()
             .map(|(pos, e)| (e.idx, false, pos))
-            .chain(block_file.error_events.iter().enumerate()
-                .map(|(pos, e)| (e.idx, true, pos)))
+            .chain(
+                block_file
+                    .error_events
+                    .iter()
+                    .enumerate()
+                    .map(|(pos, e)| (e.idx, true, pos)),
+            )
             .collect();
         idx_map.sort_by_key(|(old_idx, _, _)| *old_idx);
         for (new_idx, (_, is_error, pos)) in idx_map.into_iter().enumerate() {
@@ -484,11 +549,21 @@ where
 #[async_trait::async_trait]
 impl<Eth> crate::DebankTraceApiServer for DebankTraceBlock<Eth>
 where
-    Eth: EthApiTypes + EthBlocks + EthTransactions + LoadBlock + LoadReceipt + LoadState + SpawnBlocking + TraceExt + 'static,
+    Eth: EthApiTypes
+        + EthBlocks
+        + EthTransactions
+        + LoadBlock
+        + LoadReceipt
+        + LoadState
+        + SpawnBlocking
+        + TraceExt
+        + 'static,
     Eth::Provider: ChainSpecProvider<ChainSpec: EthChainSpec + EthereumHardforks>,
 {
     async fn trace_debank_block(&self, block_id: BlockId) -> RpcResult<DebankOutPut> {
-        Self::trace_debank_block(self, block_id).await.map_err(Into::into)
+        Self::trace_debank_block(self, block_id)
+            .await
+            .map_err(Into::into)
     }
 }
 

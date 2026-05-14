@@ -1,9 +1,13 @@
-use alloy::primitives::{Address, B256, LogData, U256};
+use alloy::{
+    primitives::{Address, B256, Bytes, LogData, U256},
+    sol_types::SolInterface,
+};
 use alloy_evm::{Database, EvmInternals};
 use revm::{
     context::{
         Block, CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint,
     },
+    precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
@@ -168,9 +172,19 @@ impl StorageCtx {
         Self::with_storage(|s| s.refund_gas(gas))
     }
 
+    /// Returns the gas limit for this precompile call.
+    pub fn gas_limit(&self) -> u64 {
+        Self::with_storage(|s| s.gas_limit())
+    }
+
     /// Returns the gas used so far.
     pub fn gas_used(&self) -> u64 {
         Self::with_storage(|s| s.gas_used())
+    }
+
+    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    pub fn state_gas_used(&self) -> u64 {
+        Self::with_storage(|s| s.state_gas_used())
     }
 
     /// Returns the gas refunded so far.
@@ -178,9 +192,20 @@ impl StorageCtx {
         Self::with_storage(|s| s.gas_refunded())
     }
 
+    /// Returns the reservoir gas.
+    pub fn reservoir(&self) -> u64 {
+        Self::with_storage(|s| s.reservoir())
+    }
+
     /// Returns the currently active hardfork.
     pub fn spec(&self) -> TempoHardfork {
         Self::with_storage(|s| s.spec())
+    }
+
+    /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
+    /// regular/state gas split independently of the active hardfork.
+    pub fn amsterdam_eip8037_enabled(&self) -> bool {
+        Self::with_storage(|s| s.amsterdam_eip8037_enabled())
     }
 
     /// Returns whether the current call context is static.
@@ -230,6 +255,38 @@ impl StorageCtx {
     /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
     pub fn recover_signer(&self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
         Self::try_with_storage(|storage| storage.recover_signer(digest, v, r, s))
+    }
+
+    /// Returns a [`PrecompileOutput`] with [`revm::precompile::PrecompileStatus::Success`] and the current gas values.
+    pub fn success_output(&self, output: Bytes) -> PrecompileOutput {
+        PrecompileOutput::new(self.gas_used(), output, self.reservoir())
+    }
+
+    /// Returns an ABI-encoded success output.
+    pub fn abi_success(&self, output: impl SolInterface) -> PrecompileOutput {
+        self.success_output(output.abi_encode().into())
+    }
+
+    /// Returns a [`PrecompileOutput`] with [`revm::precompile::PrecompileStatus::Revert`] and the current gas values.
+    pub fn revert_output(&self, output: Bytes) -> PrecompileOutput {
+        PrecompileOutput::revert(self.gas_used(), output, self.reservoir())
+    }
+
+    /// Reverts with an ABI-encoded error.
+    pub fn abi_revert(&self, error: impl SolInterface) -> PrecompileOutput {
+        self.revert_output(error.abi_encode().into())
+    }
+
+    /// Returns a [`PrecompileOutput`] with [`revm::precompile::PrecompileStatus::Halt`] and the current gas values.
+    pub fn halt_output(&self, halt: PrecompileHalt) -> PrecompileOutput {
+        PrecompileOutput::halt(halt, self.reservoir())
+    }
+
+    /// Returns a [`PrecompileResult`] constructed from the given [`TempoPrecompileError`].
+    pub fn error_result(&self, error: impl Into<TempoPrecompileError>) -> PrecompileResult {
+        error
+            .into()
+            .into_precompile_result(self.gas_used(), self.reservoir())
     }
 }
 
@@ -290,27 +347,6 @@ impl<'evm> StorageCtx {
         Self::enter(&mut provider, f)
     }
 
-    /// Like [`enter_evm`](Self::enter_evm), but meters storage access under `gas_limit`
-    /// and returns both the closure result and gas consumed.
-    pub fn enter_evm_with_gas_limit<J, R>(
-        journal: &'evm mut J,
-        block_env: &'evm dyn Block,
-        cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
-        gas_limit: u64,
-        f: impl FnOnce() -> R,
-    ) -> (R, u64)
-    where
-        J: JournalTr<Database: Database> + Debug,
-    {
-        let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
-        let mut provider =
-            EvmPrecompileStorageProvider::new_with_gas_limit(internals, cfg, gas_limit);
-        let result = Self::enter(&mut provider, f);
-        let gas_used = provider.gas_used();
-        (result, gas_used)
-    }
-
     /// Like [`enter_evm`](Self::enter_evm), but takes a `&mut impl ContextTr`
     /// directly instead of requiring the caller to destructure the context.
     pub fn enter_ctx<C, R>(ctx: &mut C, f: impl FnOnce() -> R) -> R
@@ -326,13 +362,19 @@ impl<'evm> StorageCtx {
     pub fn enter_ctx_with_gas_limit<C, R>(
         ctx: &mut C,
         gas_limit: u64,
+        reservoir: u64,
         f: impl FnOnce() -> R,
     ) -> (R, u64)
     where
         C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
-        Self::enter_evm_with_gas_limit(journal, block, cfg, tx, gas_limit, f)
+        let internals = EvmInternals::new(journal, block, cfg, tx);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_with_gas_limit(internals, cfg, gas_limit, reservoir);
+        let result = Self::enter(&mut provider, f);
+        let gas_used = provider.gas_used();
+        (result, gas_used)
     }
 
     /// Entry point for a "canonical" precompile (with unique known address).
@@ -426,6 +468,16 @@ impl StorageCtx {
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn counter_sload(&self) -> u64 {
         self.as_hashmap().counter_sload()
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn counter_sstore(&self) -> u64 {
+        self.as_hashmap().counter_sstore()
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn reset_counters(&mut self) {
+        self.as_hashmap().reset_counters()
     }
 
     /// Checks if a contract at the given address has bytecode deployed.

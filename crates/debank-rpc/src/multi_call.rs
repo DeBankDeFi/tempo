@@ -3,10 +3,7 @@ use alloy_eips::BlockId;
 use alloy_rpc_types_eth::{BlockOverrides, TransactionRequest, state::StateOverride};
 use jsonrpsee::core::RpcResult;
 use reth_rpc_convert::RpcTxReq;
-use reth_rpc_eth_api::{
-    EthApiTypes,
-    helpers::EthCall,
-};
+use reth_rpc_eth_api::{EthApiTypes, helpers::EthCall};
 use reth_rpc_eth_types::EthApiError;
 use revm::context::result::ExecutionResult;
 
@@ -32,6 +29,7 @@ where
     RpcTxReq<Eth::NetworkTypes>: AsRef<TransactionRequest>,
 {
     /// Execute multiple calls in a single request.
+    #[allow(clippy::too_many_arguments)]
     async fn multi_call(
         &self,
         requests: Vec<RpcTxReq<Eth::NetworkTypes>>,
@@ -87,8 +85,7 @@ where
                     let to_addr = request.as_ref().to.as_ref().and_then(|kind| kind.to());
                     if to_addr == Some(&NATIVE_TOKEN_ADDRESS) {
                         let input = request.as_ref().input.input();
-                        let mut res =
-                            eth_erc20_handle(&db, input.map(|b| b.as_ref()));
+                        let mut res = eth_erc20_handle(&db, input.map(|b| b.as_ref()));
                         if res.code != MultiCallErrorCode::Success as i32 {
                             multi_call_stats.success = false;
                         }
@@ -103,29 +100,24 @@ where
                     let (current_evm_env, prepared_tx) =
                         eth_api.prepare_call_env(evm_env.clone(), request, &mut db, overrides)?;
 
-                    let execute_result =
-                        eth_api.transact(&mut db, current_evm_env, prepared_tx)?;
+                    let execute_result = eth_api.transact(&mut db, current_evm_env, prepared_tx)?;
 
                     let mut res = match execute_result.result {
-                        ExecutionResult::Success {
-                            output, gas, ..
-                        } => SingleCallResult {
+                        ExecutionResult::Success { output, gas, .. } => SingleCallResult {
                             code: MultiCallErrorCode::Success as i32,
                             err: String::new(),
                             from_cache: false,
                             result: output.into_data(),
-                            gas_used: gas.used() as i64,
+                            gas_used: gas.tx_gas_used() as i64,
                             time_cost: 0.0,
                         },
-                        ExecutionResult::Revert {
-                            output, gas, ..
-                        } => SingleCallResult {
+                        ExecutionResult::Revert { output, gas, .. } => SingleCallResult {
                             code: MultiCallErrorCode::EVMReverted as i32,
                             err: alloy_sol_types::decode_revert_reason(&output)
                                 .unwrap_or_else(|| "Reason Unknown".to_string()),
                             from_cache: false,
                             result: alloy_primitives::Bytes::default(),
-                            gas_used: gas.used() as i64,
+                            gas_used: gas.tx_gas_used() as i64,
                             time_cost: 0.0,
                         },
                         ExecutionResult::Halt { reason, gas, .. } => SingleCallResult {
@@ -133,7 +125,7 @@ where
                             err: format!("Halted: {reason:?}"),
                             from_cache: false,
                             result: alloy_primitives::Bytes::default(),
-                            gas_used: gas.used() as i64,
+                            gas_used: gas.tx_gas_used() as i64,
                             time_cost: 0.0,
                         },
                     };

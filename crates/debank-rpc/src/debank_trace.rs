@@ -3,14 +3,16 @@
 //! Ported from reth-x `crates/rpc/rpc-eth-types/src/debank.rs` with Tempo adaptations.
 
 use alloy_consensus::constants::KECCAK_EMPTY;
-use alloy_primitives::{hex, keccak256, Address, BlockHash, BlockNumber, Bytes, B256 as H256, U256};
+use alloy_primitives::{
+    Address, B256 as H256, BlockHash, BlockNumber, Bytes, U256, hex, keccak256,
+};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use alloy_rpc_types_eth::Header;
 use reth_revm::db::{AccountState, Cache};
 use revm::DatabaseRef;
 use revm_inspectors::tracing::{
-    types::{CallKind, CallLog, CallTraceNode, TraceMemberOrder},
     CallTraceArena,
+    types::{CallKind, CallLog, CallTraceNode, TraceMemberOrder},
 };
 use serde::{Deserialize, Serialize};
 use sha1::{Digest as Sha1Digest, Sha1};
@@ -217,7 +219,10 @@ impl BlockFile {
         for trace in &self.traces {
             ids.push(trace.id.clone());
         }
-        BlockValidation { validation_hash: calc_validation_hash(&ids), is_fork: false }
+        BlockValidation {
+            validation_hash: calc_validation_hash(&ids),
+            is_fork: false,
+        }
     }
 }
 
@@ -244,13 +249,16 @@ pub trait DebankID {
             hasher.update(arg.as_bytes());
         }
         let result = hasher.finalize();
-        format!("{:x}", result)
+        format!("{result:x}")
     }
 }
 
 impl DebankID for DebankEvent {
     fn debank_id(&self) -> String {
-        Self::calculate_id(vec![&self.parent_trace_id, &self.pos_in_parent_trace.to_string()])
+        Self::calculate_id(vec![
+            &self.parent_trace_id,
+            &self.pos_in_parent_trace.to_string(),
+        ])
     }
 }
 
@@ -270,7 +278,7 @@ pub fn calc_validation_hash(ids: &[String]) -> i64 {
         let mut hasher = Sha1::new();
         hasher.update(each.as_bytes());
         let hash_int = U256::from_str_radix(&hex::encode(hasher.finalize()), 16)
-            .unwrap_or_else(|_| panic!("Failed to convert id {} to U256", each));
+            .unwrap_or_else(|_| panic!("Failed to convert id {each} to U256"));
         sha1_sum += hash_int;
     }
     let sha1_sum_str = sha1_sum.to_string();
@@ -332,7 +340,7 @@ impl From<&CallTraceNode> for DebankTrace {
             call_type = trace.kind.to_string().to_lowercase();
         }
         let error = trace.status.and_then(fmt_error_msg);
-        let mut debank_trace = DebankTrace {
+        let mut debank_trace = Self {
             from_addr: trace.caller,
             gas_limit: trace.gas_limit,
             input: trace.data.clone(),
@@ -359,13 +367,26 @@ impl From<&CallTraceNode> for DebankTrace {
 
 impl From<&CallLog> for DebankEvent {
     fn from(log: &CallLog) -> Self {
-        let selector = log.raw_log.topics().first().map(|h| h.to_string()).unwrap_or_default();
+        let selector = log
+            .raw_log
+            .topics()
+            .first()
+            .map(|h| h.to_string())
+            .unwrap_or_default();
         let topics = if log.raw_log.topics().len() > 1 {
-            log.raw_log.topics()[1..].iter().map(|h| h.to_string()).collect()
+            log.raw_log.topics()[1..]
+                .iter()
+                .map(|h| h.to_string())
+                .collect()
         } else {
             vec![]
         };
-        DebankEvent { selector, topics, data: log.raw_log.data.clone(), ..Default::default() }
+        Self {
+            selector,
+            topics,
+            data: log.raw_log.data.clone(),
+            ..Default::default()
+        }
     }
 }
 
@@ -373,6 +394,9 @@ impl From<&CallLog> for DebankEvent {
 // Trace tree building
 // ---------------------------------------------------------------------------
 
+// Trace 节点比 Event 大 ~376 vs ~168 bytes; 整树只在一笔 tx 内构建后即消费，
+// 不进入持久存储，不 Box 以避免热路径上的一次 heap 分配。
+#[allow(clippy::large_enum_variant)]
 enum DebankTraceOrLog {
     Trace(DebankTraceNode),
     Log(DebankEvent),
@@ -384,6 +408,7 @@ struct DebankTraceNode {
     success: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_trace_node(
     tx_id: String,
     parent_trace_id: String,
@@ -429,7 +454,9 @@ fn build_trace_node(
                 if child_trace.trace.storage_change && child_node.trace.success {
                     debank_node.trace.storage_change = true;
                 }
-                debank_node.children.push(DebankTraceOrLog::Trace(child_trace));
+                debank_node
+                    .children
+                    .push(DebankTraceOrLog::Trace(child_trace));
             }
             TraceMemberOrder::Log(i) => {
                 let mut child_event: DebankEvent = (&node.logs[*i]).into();
@@ -442,7 +469,9 @@ fn build_trace_node(
                 // because final success/error classification is based on
                 // receipt status (not CallTraceArena success). See trace_block.rs.
                 *log_index += 1;
-                debank_node.children.push(DebankTraceOrLog::Log(child_event));
+                debank_node
+                    .children
+                    .push(DebankTraceOrLog::Log(child_event));
             }
             _ => {}
         }
@@ -453,31 +482,38 @@ fn build_trace_node(
         // child_trace_address tracks the last child call's address, but if there are no
         // child calls it stays empty. Fall back to parent trace_address + child count.
         let selfdestruct_ta = if child_trace_address.is_empty() {
-            let mut ta = trace_address.clone();
+            let mut ta = trace_address;
             ta.push(node.children.len());
             ta
         } else {
-            child_trace_address.last_mut().map(|last| *last += 1);
+            if let Some(last) = child_trace_address.last_mut() {
+                *last += 1;
+            }
             child_trace_address
         };
         debank_node.trace.subtraces += 1;
         let mut selfdestruct_trace = DebankTrace {
             from_addr: node.trace.selfdestruct_address.unwrap_or_default(),
             to_addr: node.trace.selfdestruct_refund_target.unwrap_or_default(),
-            value: node.trace.selfdestruct_transferred_value.unwrap_or_default(),
+            value: node
+                .trace
+                .selfdestruct_transferred_value
+                .unwrap_or_default(),
             trace_address: selfdestruct_ta,
-            parent_trace_id: id.clone(),
+            parent_trace_id: id,
             pos_in_parent_trace: debank_node.children.len(),
-            tx_id: tx_id.clone(),
+            tx_id,
             call_create_type: "suicide".to_string(),
             ..Default::default()
         };
         selfdestruct_trace.id = selfdestruct_trace.debank_id();
-        debank_node.children.push(DebankTraceOrLog::Trace(DebankTraceNode {
-            trace: selfdestruct_trace,
-            children: vec![],
-            success: parent_success && debank_node.success,
-        }));
+        debank_node
+            .children
+            .push(DebankTraceOrLog::Trace(DebankTraceNode {
+                trace: selfdestruct_trace,
+                children: vec![],
+                success: parent_success && debank_node.success,
+            }));
     }
     debank_node
 }
@@ -518,7 +554,12 @@ pub fn build_debank_traces(
     tx_id: H256,
     traces: CallTraceArena,
     log_index: &std::cell::RefCell<usize>,
-) -> (Vec<DebankTrace>, Vec<DebankTrace>, Vec<DebankEvent>, Vec<DebankEvent>) {
+) -> (
+    Vec<DebankTrace>,
+    Vec<DebankTrace>,
+    Vec<DebankEvent>,
+    Vec<DebankEvent>,
+) {
     let nodes = traces.into_nodes();
     if nodes.is_empty() {
         return (vec![], vec![], vec![], vec![]);
@@ -537,7 +578,13 @@ pub fn build_debank_traces(
     let mut error_traces = vec![];
     let mut events = vec![];
     let mut error_events = vec![];
-    finish_build_traces(&mut top, &mut traces, &mut error_traces, &mut events, &mut error_events);
+    finish_build_traces(
+        &mut top,
+        &mut traces,
+        &mut error_traces,
+        &mut events,
+        &mut error_events,
+    );
     (traces, error_traces, events, error_events)
 }
 
@@ -553,7 +600,6 @@ pub fn get_storage_contracts_from_cache(cache: &Cache) -> Vec<Address> {
         .map(|(address, _)| *address)
         .collect()
 }
-
 
 pub fn get_storage_diffs_from_cache<DB: DatabaseRef>(cache: Cache, pre_db: DB) -> BlockStorageDiff {
     let mut new_accounts = Vec::new();
@@ -584,19 +630,24 @@ pub fn get_storage_diffs_from_cache<DB: DatabaseRef>(cache: Cache, pre_db: DB) -
                 })
                 .collect();
             if !diffs.is_empty() {
-                storage_diffs
-                    .push(AccountStorageDiff { address: keccak256(address.0), diffs });
+                storage_diffs.push(AccountStorageDiff {
+                    address: keccak256(address.0),
+                    diffs,
+                });
             }
         }
 
         if let Some(code) = db_account.info.code {
             let code_hash = db_account.info.code_hash;
-            if let Ok(Some(account)) = pre_db.basic_ref(address) {
-                if account.code_hash == code_hash {
-                    continue;
-                }
+            if let Ok(Some(account)) = pre_db.basic_ref(address)
+                && account.code_hash == code_hash
+            {
+                continue;
             }
-            new_codes.push(NewCode { code_hash, code: code.original_bytes() });
+            new_codes.push(NewCode {
+                code_hash,
+                code: code.original_bytes(),
+            });
         }
     }
 
@@ -630,12 +681,15 @@ impl From<&alloy_genesis::Genesis> for BlockStorageDiff {
         let mut storage_diffs = Vec::new();
 
         for (address, account) in &genesis.alloc {
-            let code_hash = if account.code.is_none() {
-                KECCAK_EMPTY
-            } else {
-                let code_hash = keccak256(account.code.as_ref().unwrap());
-                new_codes.push(NewCode { code_hash, code: account.code.clone().unwrap().into() });
+            let code_hash = if let Some(code) = &account.code {
+                let code_hash = keccak256(code);
+                new_codes.push(NewCode {
+                    code_hash,
+                    code: code.clone(),
+                });
                 code_hash
+            } else {
+                KECCAK_EMPTY
             };
 
             new_accounts.push(NewAccount {
@@ -654,13 +708,15 @@ impl From<&alloy_genesis::Genesis> for BlockStorageDiff {
                     })
                     .collect();
                 if !diffs.is_empty() {
-                    storage_diffs
-                        .push(AccountStorageDiff { address: keccak256(address.0), diffs });
+                    storage_diffs.push(AccountStorageDiff {
+                        address: keccak256(address.0),
+                        diffs,
+                    });
                 }
             }
         }
 
-        BlockStorageDiff {
+        Self {
             hash: H256::ZERO,
             parent_hash: alloy_consensus::constants::EMPTY_ROOT_HASH,
             new_accounts,
@@ -681,11 +737,15 @@ pub fn build_genesis_txs_and_traces(
     let mut traces = Vec::new();
 
     let mut sorted_addrs: Vec<&Address> = genesis.alloc.keys().collect();
-    sorted_addrs.sort_by(|a, b| a.to_string().to_lowercase().cmp(&b.to_string().to_lowercase()));
+    sorted_addrs.sort_by(|a, b| {
+        a.to_string()
+            .to_lowercase()
+            .cmp(&b.to_string().to_lowercase())
+    });
 
     for addr in sorted_addrs {
         let account = &genesis.alloc[addr];
-        let addr_lower = format!("{:?}", addr).to_lowercase();
+        let addr_lower = format!("{addr:?}").to_lowercase();
 
         if account.balance > U256::ZERO {
             let tx_id = format!("0xgenesis01{:013}{}", 0, addr_lower);
@@ -712,38 +772,37 @@ pub fn build_genesis_txs_and_traces(
             tx_idx += 1;
         }
 
-        if let Some(ref code) = account.code {
-            if !code.is_empty() {
-                let tx_id = format!("0xgenesis02{:013}{}", 0, addr_lower);
-                txs.push(DebankTransaction {
-                    id: tx_id.clone(),
-                    from: zero_addr,
-                    to: *addr,
-                    status: true,
-                    input: code.clone(),
-                    transaction_index: tx_idx,
-                    ..Default::default()
-                });
-                let trace_id = DebankTrace::calculate_id(vec![&tx_id, "", "0"]);
-                traces.push(DebankTrace {
-                    id: trace_id,
-                    from_addr: zero_addr,
-                    to_addr: *addr,
-                    input: code.clone(),
-                    output: code.clone(),
-                    call_create_type: "create".to_string(),
-                    tx_id,
-                    ..Default::default()
-                });
-                tx_idx += 1;
-            }
+        if let Some(ref code) = account.code
+            && !code.is_empty()
+        {
+            let tx_id = format!("0xgenesis02{:013}{}", 0, addr_lower);
+            txs.push(DebankTransaction {
+                id: tx_id.clone(),
+                from: zero_addr,
+                to: *addr,
+                status: true,
+                input: code.clone(),
+                transaction_index: tx_idx,
+                ..Default::default()
+            });
+            let trace_id = DebankTrace::calculate_id(vec![&tx_id, "", "0"]);
+            traces.push(DebankTrace {
+                id: trace_id,
+                from_addr: zero_addr,
+                to_addr: *addr,
+                input: code.clone(),
+                output: code.clone(),
+                call_create_type: "create".to_string(),
+                tx_id,
+                ..Default::default()
+            });
+            tx_idx += 1;
         }
     }
 
     // Native token contract (0xeeee...eeee)
-    let native_addr =
-        Address::from_str("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").unwrap();
-    let native_addr_lower = format!("{:?}", native_addr).to_lowercase();
+    let native_addr = Address::from_str("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").unwrap();
+    let native_addr_lower = format!("{native_addr:?}").to_lowercase();
     let native_tx_id = format!("0xgenesis03{:013}{}", 0, native_addr_lower);
     txs.push(DebankTransaction {
         id: native_tx_id.clone(),
@@ -788,17 +847,25 @@ mod tests {
             value: U256::ZERO,
             calls: Some(vec![
                 TempoCall {
-                    to: "0x20c0000000000000000000000000000000000000".parse().unwrap(),
+                    to: "0x20c0000000000000000000000000000000000000"
+                        .parse()
+                        .unwrap(),
                     value: U256::ZERO,
                     input: Bytes::from(vec![0x09, 0x5e, 0xa7, 0xb3]),
                 },
                 TempoCall {
-                    to: "0x99979c31c9785c4391dd02c00d981b30319add8f".parse().unwrap(),
+                    to: "0x99979c31c9785c4391dd02c00d981b30319add8f"
+                        .parse()
+                        .unwrap(),
                     value: U256::ZERO,
                     input: Bytes::from(vec![0xae, 0x77, 0xc2, 0x37]),
                 },
             ]),
-            fee_token: Some("0x20c0000000000000000000000000000000000000".parse().unwrap()),
+            fee_token: Some(
+                "0x20c0000000000000000000000000000000000000"
+                    .parse()
+                    .unwrap(),
+            ),
             nonce_key: Some(U256::ZERO),
             valid_before: None,
             valid_after: None,
@@ -823,9 +890,18 @@ mod tests {
         // Verify AA fields present
         assert_eq!(json["chain_id"], 4217);
         assert_eq!(json["calls"].as_array().unwrap().len(), 2);
-        assert_eq!(json["calls"][0]["to"], "0x20c0000000000000000000000000000000000000");
-        assert_eq!(json["calls"][1]["to"], "0x99979c31c9785c4391dd02c00d981b30319add8f");
-        assert_eq!(json["fee_token"], "0x20c0000000000000000000000000000000000000");
+        assert_eq!(
+            json["calls"][0]["to"],
+            "0x20c0000000000000000000000000000000000000"
+        );
+        assert_eq!(
+            json["calls"][1]["to"],
+            "0x99979c31c9785c4391dd02c00d981b30319add8f"
+        );
+        assert_eq!(
+            json["fee_token"],
+            "0x20c0000000000000000000000000000000000000"
+        );
         assert_eq!(json["signature_type"], "webAuthn");
         assert_eq!(json["signature"]["type"], "webAuthn");
 
@@ -850,7 +926,9 @@ mod tests {
         let tx = DebankTransaction {
             id: "0xdef".to_string(),
             from: Address::ZERO,
-            to: "0xf851abca1d0fd1df8eaba6de466a102996b7d7b2".parse().unwrap(),
+            to: "0xf851abca1d0fd1df8eaba6de466a102996b7d7b2"
+                .parse()
+                .unwrap(),
             gas_limit: 21000,
             gas_price: 20000000000,
             gas_used: 21000,

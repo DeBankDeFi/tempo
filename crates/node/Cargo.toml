@@ -15,7 +15,7 @@ debank-rpc.workspace = true
 tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-consensus.workspace = true
 tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
@@ -57,11 +57,12 @@ commonware-runtime = { workspace = true, features = ["external"] }
 eyre.workspace = true
 futures.workspace = true
 jiff = { workspace = true, features = ["std"] }
+jsonrpsee.workspace = true
 reqwest.workspace = true
-tokio.workspace = true
 url.workspace = true
 serde.workspace = true
-jsonrpsee.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempo-e2e.workspace = true

@@ -35,10 +35,7 @@ async fn consensus_subscribe_and_query_finalization() {
     let _ = tempo_eyre::install();
 
     let initial_height = 3;
-    let setup = Setup::new()
-        .how_many_signers(1)
-        .t2_time(0)
-        .epoch_length(100);
+    let setup = Setup::new().how_many_signers(1).epoch_length(100);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let (addr_tx, addr_rx) = oneshot::channel::<(SocketAddr, SocketAddr)>();
@@ -99,7 +96,6 @@ async fn consensus_subscribe_and_query_finalization() {
                 let queried_block = http_client
                     .get_finalization(Query::Height(height))
                     .await
-                    .unwrap()
                     .unwrap();
 
                 assert_eq!(queried_block, block);
@@ -111,11 +107,7 @@ async fn consensus_subscribe_and_query_finalization() {
         }
     }
 
-    let _ = http_client
-        .get_finalization(Query::Latest)
-        .await
-        .unwrap()
-        .unwrap();
+    let _ = http_client.get_finalization(Query::Latest).await.unwrap();
 
     let state = http_client.get_latest().await.unwrap();
 
@@ -188,7 +180,7 @@ fn get_identity_transition_proof_after_full_dkg() {
 
         // --- First full DKG ---
         execution_runtime
-            .set_next_full_dkg_ceremony(http_url.clone(), first_full_dkg_epoch)
+            .set_next_full_dkg_ceremony_v2(http_url.clone(), first_full_dkg_epoch)
             .await
             .unwrap();
 
@@ -220,7 +212,7 @@ fn get_identity_transition_proof_after_full_dkg() {
 
         // --- Second full DKG ---
         execution_runtime
-            .set_next_full_dkg_ceremony(http_url.clone(), second_full_dkg_epoch)
+            .set_next_full_dkg_ceremony_v2(http_url.clone(), second_full_dkg_epoch)
             .await
             .unwrap();
 

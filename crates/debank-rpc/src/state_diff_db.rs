@@ -2,12 +2,12 @@
 //!
 //! Ported from reth-x `crates/rpc/rpc-eth-types/src/cache/db.rs`.
 
+use alloy_primitives::{Address, B256, U256, map::AddressMap};
 use revm::{
     Database, DatabaseCommit, DatabaseRef,
     database::InMemoryDB,
     state::{Account, AccountInfo, Bytecode},
 };
-use alloy_primitives::{Address, B256, U256, map::AddressMap};
 
 /// A database that wraps an external database and an in-memory diff database.
 ///
@@ -31,7 +31,10 @@ pub struct StateDiffTraceDB<ExtDB> {
 
 impl<ExtDB> StateDiffTraceDB<ExtDB> {
     pub fn new(db: ExtDB) -> Self {
-        Self { diff: InMemoryDB::default(), db }
+        Self {
+            diff: InMemoryDB::default(),
+            db,
+        }
     }
 }
 

@@ -28,7 +28,6 @@ impl<Eth> PreApi<Eth> {
     }
 }
 
-
 impl<Eth> PreApi<Eth>
 where
     Eth: EthApiTypes + TraceExt + 'static,
@@ -57,11 +56,13 @@ where
 
             match result {
                 revm::context::result::ExecutionResult::Success {
-                    gas, logs: exec_logs, ..
+                    gas,
+                    logs: exec_logs,
+                    ..
                 } => {
                     let traces = inspector
                         .into_parity_builder()
-                        .into_localized_transaction_traces(tx_info.clone());
+                        .into_localized_transaction_traces(tx_info);
 
                     let logs: Vec<Log> = exec_logs
                         .into_iter()
@@ -82,7 +83,7 @@ where
                         trace: traces,
                         logs,
                         error: None,
-                        gas_used: gas.used(),
+                        gas_used: gas.tx_gas_used(),
                     })
                 }
                 revm::context::result::ExecutionResult::Halt { reason, .. } => Err(PreError {
@@ -125,7 +126,7 @@ where
 
         self.eth_api
             .spawn_with_state_at_block(BlockId::hash(parent_hash), move |eth_api, mut db| {
-                let this = PreApi::new(eth_api);
+                let this = Self::new(eth_api);
                 let mut results: Vec<PreResult> = Vec::with_capacity(transactions.len());
 
                 for (tx_index, tx) in transactions.into_iter().enumerate() {
@@ -144,8 +145,13 @@ where
                         base_fee,
                     };
 
-                    let res =
-                        this.trace_transaction(current_evm_env, tx_env, &mut db, tx_info, block_timestamp);
+                    let res = this.trace_transaction(
+                        current_evm_env,
+                        tx_env,
+                        &mut db,
+                        tx_info,
+                        block_timestamp,
+                    );
                     results.push(res);
                 }
 
@@ -168,9 +174,15 @@ where
         state_overrides: Option<StateOverride>,
         block_overrides: Option<Box<BlockOverrides>>,
     ) -> RpcResult<Vec<PreResult>> {
-        Self::trace_many(self, transactions, block_id, state_overrides, block_overrides)
-            .await
-            .map_err(Into::into)
+        Self::trace_many(
+            self,
+            transactions,
+            block_id,
+            state_overrides,
+            block_overrides,
+        )
+        .await
+        .map_err(Into::into)
     }
 }
 
