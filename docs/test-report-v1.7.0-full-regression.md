@@ -226,3 +226,56 @@ v1.7.0 debank fork 在当前 pre-T4 链段上行为完整对齐 v1.6.0 baseline 
 - [ ] **5/18 mainnet T4 激活**后：跑 post-T4 块、确认 `consensus_context` 字段出现、blockfile schema 不变
 - [ ] **moderato testnet T4 已激活**（5/14 16:00 CEST）：起 `--chain=moderato` 容器单独验证（dev 当前跟 presto mainnet）
 - [ ] 如果链上出现 signature_verifier 调用样本，补一组测试
+
+---
+
+## 附录 C：60 块 dev vs 官方 RPC byte-identical 扩展对比（2026-05-14 追加）
+
+之前的 post-T3 报告只对 9 个 sample 块跑了 dev vs official 对比，覆盖偏窄。本节用 60 块扩展覆盖，确认 dev 节点行为在更大窗口上跟官方完全一致。
+
+### 块采样
+
+| 区段 | 数量 | 间隔 | 范围 |
+|------|------|------|------|
+| pre-T3 | 30 | 700 块 | 10,080,000..10,100,300 |
+| post-T3 | 25 | 110,000 块 | 17,100,000..19,740,000 |
+| near-head | 5 | 5000 块 | 19,920,000..19,940,000 |
+| **合计** | **60** | | |
+
+### 对比项（每块）
+
+- 4 个 root hash: `hash` / `stateRoot` / `transactionsRoot` / `receiptsRoot`
+- 每笔 tx 的 receipt 7 字段: `status` / `gasUsed` / `blockHash` / `cumulativeGasUsed` / `contractAddress` / `logs.count`
+- 每笔 tx 的 `trace_transaction` 输出 sha256 摘要（包含 null result，例如 system tx）
+
+### 结果
+
+```
+Dev vs Official byte-identical comparison
+Total blocks: 60
+  pre-T3:  30
+  post-T3: 25
+  near-head: 5
+
+  [60/60] 64s elapsed; pass=1052 fail=0
+
+==================================================
+Total blocks:       60
+Blocks with fail:   0
+Per-field PASS:     1052
+Per-field FAIL:     0
+Time:               64s
+```
+
+**60 / 60 块全部 byte-identical**，1052 个 per-field 断言全 PASS，0 fail。
+
+### 用法
+
+脚本 `scripts/dev_vs_official.py`：
+
+```bash
+scp scripts/dev_vs_official.py blockchain-misc-x3:/tmp/
+ssh blockchain-misc-x3 'python3 /tmp/dev_vs_official.py'
+```
+
+注意：官方 RPC `rpc.tempo.xyz` 需要 `User-Agent` header 否则返回 403，脚本里已经加上。
