@@ -2,6 +2,11 @@
 //!
 //! Provides `pre_traceMany`, `eth_multiCall`, and `trace_debankBlock` endpoints.
 
+// `multi_call` has 8 params dictated by the deployed RPC schema; we can't merge them.
+// `#[allow]` on the trait method doesn't reach into jsonrpsee::rpc macro-generated impl,
+// so allow at module scope.
+#![allow(clippy::too_many_arguments)]
+
 pub mod debank_trace;
 pub mod erc20_handle;
 pub mod multi_call;

@@ -249,7 +249,7 @@ pub trait DebankID {
             hasher.update(arg.as_bytes());
         }
         let result = hasher.finalize();
-        format!("{:x}", result)
+        format!("{result:x}")
     }
 }
 
@@ -278,7 +278,7 @@ pub fn calc_validation_hash(ids: &[String]) -> i64 {
         let mut hasher = Sha1::new();
         hasher.update(each.as_bytes());
         let hash_int = U256::from_str_radix(&hex::encode(hasher.finalize()), 16)
-            .unwrap_or_else(|_| panic!("Failed to convert id {} to U256", each));
+            .unwrap_or_else(|_| panic!("Failed to convert id {each} to U256"));
         sha1_sum += hash_int;
     }
     let sha1_sum_str = sha1_sum.to_string();
@@ -340,7 +340,7 @@ impl From<&CallTraceNode> for DebankTrace {
             call_type = trace.kind.to_string().to_lowercase();
         }
         let error = trace.status.and_then(fmt_error_msg);
-        let mut debank_trace = DebankTrace {
+        let mut debank_trace = Self {
             from_addr: trace.caller,
             gas_limit: trace.gas_limit,
             input: trace.data.clone(),
@@ -381,7 +381,7 @@ impl From<&CallLog> for DebankEvent {
         } else {
             vec![]
         };
-        DebankEvent {
+        Self {
             selector,
             topics,
             data: log.raw_log.data.clone(),
@@ -394,6 +394,9 @@ impl From<&CallLog> for DebankEvent {
 // Trace tree building
 // ---------------------------------------------------------------------------
 
+// Trace 节点比 Event 大 ~376 vs ~168 bytes; 整树只在一笔 tx 内构建后即消费，
+// 不进入持久存储，不 Box 以避免热路径上的一次 heap 分配。
+#[allow(clippy::large_enum_variant)]
 enum DebankTraceOrLog {
     Trace(DebankTraceNode),
     Log(DebankEvent),
@@ -405,6 +408,7 @@ struct DebankTraceNode {
     success: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_trace_node(
     tx_id: String,
     parent_trace_id: String,
@@ -478,11 +482,13 @@ fn build_trace_node(
         // child_trace_address tracks the last child call's address, but if there are no
         // child calls it stays empty. Fall back to parent trace_address + child count.
         let selfdestruct_ta = if child_trace_address.is_empty() {
-            let mut ta = trace_address.clone();
+            let mut ta = trace_address;
             ta.push(node.children.len());
             ta
         } else {
-            child_trace_address.last_mut().map(|last| *last += 1);
+            if let Some(last) = child_trace_address.last_mut() {
+                *last += 1;
+            }
             child_trace_address
         };
         debank_node.trace.subtraces += 1;
@@ -494,9 +500,9 @@ fn build_trace_node(
                 .selfdestruct_transferred_value
                 .unwrap_or_default(),
             trace_address: selfdestruct_ta,
-            parent_trace_id: id.clone(),
+            parent_trace_id: id,
             pos_in_parent_trace: debank_node.children.len(),
-            tx_id: tx_id.clone(),
+            tx_id,
             call_create_type: "suicide".to_string(),
             ..Default::default()
         };
@@ -633,10 +639,10 @@ pub fn get_storage_diffs_from_cache<DB: DatabaseRef>(cache: Cache, pre_db: DB) -
 
         if let Some(code) = db_account.info.code {
             let code_hash = db_account.info.code_hash;
-            if let Ok(Some(account)) = pre_db.basic_ref(address) {
-                if account.code_hash == code_hash {
-                    continue;
-                }
+            if let Ok(Some(account)) = pre_db.basic_ref(address)
+                && account.code_hash == code_hash
+            {
+                continue;
             }
             new_codes.push(NewCode {
                 code_hash,
@@ -675,15 +681,15 @@ impl From<&alloy_genesis::Genesis> for BlockStorageDiff {
         let mut storage_diffs = Vec::new();
 
         for (address, account) in &genesis.alloc {
-            let code_hash = if account.code.is_none() {
-                KECCAK_EMPTY
-            } else {
-                let code_hash = keccak256(account.code.as_ref().unwrap());
+            let code_hash = if let Some(code) = &account.code {
+                let code_hash = keccak256(code);
                 new_codes.push(NewCode {
                     code_hash,
-                    code: account.code.clone().unwrap().into(),
+                    code: code.clone(),
                 });
                 code_hash
+            } else {
+                KECCAK_EMPTY
             };
 
             new_accounts.push(NewAccount {
@@ -710,7 +716,7 @@ impl From<&alloy_genesis::Genesis> for BlockStorageDiff {
             }
         }
 
-        BlockStorageDiff {
+        Self {
             hash: H256::ZERO,
             parent_hash: alloy_consensus::constants::EMPTY_ROOT_HASH,
             new_accounts,
@@ -739,7 +745,7 @@ pub fn build_genesis_txs_and_traces(
 
     for addr in sorted_addrs {
         let account = &genesis.alloc[addr];
-        let addr_lower = format!("{:?}", addr).to_lowercase();
+        let addr_lower = format!("{addr:?}").to_lowercase();
 
         if account.balance > U256::ZERO {
             let tx_id = format!("0xgenesis01{:013}{}", 0, addr_lower);
@@ -766,37 +772,37 @@ pub fn build_genesis_txs_and_traces(
             tx_idx += 1;
         }
 
-        if let Some(ref code) = account.code {
-            if !code.is_empty() {
-                let tx_id = format!("0xgenesis02{:013}{}", 0, addr_lower);
-                txs.push(DebankTransaction {
-                    id: tx_id.clone(),
-                    from: zero_addr,
-                    to: *addr,
-                    status: true,
-                    input: code.clone(),
-                    transaction_index: tx_idx,
-                    ..Default::default()
-                });
-                let trace_id = DebankTrace::calculate_id(vec![&tx_id, "", "0"]);
-                traces.push(DebankTrace {
-                    id: trace_id,
-                    from_addr: zero_addr,
-                    to_addr: *addr,
-                    input: code.clone(),
-                    output: code.clone(),
-                    call_create_type: "create".to_string(),
-                    tx_id,
-                    ..Default::default()
-                });
-                tx_idx += 1;
-            }
+        if let Some(ref code) = account.code
+            && !code.is_empty()
+        {
+            let tx_id = format!("0xgenesis02{:013}{}", 0, addr_lower);
+            txs.push(DebankTransaction {
+                id: tx_id.clone(),
+                from: zero_addr,
+                to: *addr,
+                status: true,
+                input: code.clone(),
+                transaction_index: tx_idx,
+                ..Default::default()
+            });
+            let trace_id = DebankTrace::calculate_id(vec![&tx_id, "", "0"]);
+            traces.push(DebankTrace {
+                id: trace_id,
+                from_addr: zero_addr,
+                to_addr: *addr,
+                input: code.clone(),
+                output: code.clone(),
+                call_create_type: "create".to_string(),
+                tx_id,
+                ..Default::default()
+            });
+            tx_idx += 1;
         }
     }
 
     // Native token contract (0xeeee...eeee)
     let native_addr = Address::from_str("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").unwrap();
-    let native_addr_lower = format!("{:?}", native_addr).to_lowercase();
+    let native_addr_lower = format!("{native_addr:?}").to_lowercase();
     let native_tx_id = format!("0xgenesis03{:013}{}", 0, native_addr_lower);
     txs.push(DebankTransaction {
         id: native_tx_id.clone(),

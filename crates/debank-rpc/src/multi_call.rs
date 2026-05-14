@@ -29,6 +29,7 @@ where
     RpcTxReq<Eth::NetworkTypes>: AsRef<TransactionRequest>,
 {
     /// Execute multiple calls in a single request.
+    #[allow(clippy::too_many_arguments)]
     async fn multi_call(
         &self,
         requests: Vec<RpcTxReq<Eth::NetworkTypes>>,

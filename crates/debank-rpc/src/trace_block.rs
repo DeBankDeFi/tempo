@@ -179,7 +179,7 @@ where
                 dtx.to = Address::ZERO;
                 dtx.input = Default::default();
                 dtx.value = U256::ZERO;
-                dtx.chain_id = tx_json.get("chainId").and_then(|v| parse_hex_u64(v));
+                dtx.chain_id = tx_json.get("chainId").and_then(&parse_hex_u64);
                 dtx.calls = tx_json
                     .get("calls")
                     .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -191,8 +191,8 @@ where
                     .get("nonceKey")
                     .and_then(|v| v.as_str())
                     .and_then(|s| U256::from_str(s).ok());
-                dtx.valid_before = tx_json.get("validBefore").and_then(|v| parse_hex_u64(v));
-                dtx.valid_after = tx_json.get("validAfter").and_then(|v| parse_hex_u64(v));
+                dtx.valid_before = tx_json.get("validBefore").and_then(&parse_hex_u64);
+                dtx.valid_after = tx_json.get("validAfter").and_then(parse_hex_u64);
                 // Signature JSON has two formats:
                 // - v2 keychain: {signature: {type, r, s, ...}, version, keyId, userAddress}
                 // - direct: {type, r, s, pubKeyX, pubKeyY, webauthnData}
@@ -311,13 +311,14 @@ where
 
                 let log_index = std::cell::RefCell::new(0usize);
                 // (traces, error_traces, events, error_events, receipt_log_count)
-                let mut all_results: Vec<(
+                type PerTxResult = (
                     Vec<DebankTrace>,
                     Vec<DebankTrace>,
                     Vec<DebankEvent>,
                     Vec<DebankEvent>,
                     usize,
-                )> = Vec::new();
+                );
+                let mut all_results: Vec<PerTxResult> = Vec::new();
 
                 for (idx, tx) in block.transactions_recovered().enumerate() {
                     let tx_hash = tx_hashes[idx];
@@ -330,7 +331,7 @@ where
                         Some(OpcodeFilter::new().enabled(OpCode::SSTORE));
                     let mut inspector = TracingInspector::new(trace_cfg);
 
-                    let tx_env = eth_api.evm_config().tx_env(&tx);
+                    let tx_env = eth_api.evm_config().tx_env(tx);
 
                     let revm::context::result::ResultAndState {
                         result: exec_result,

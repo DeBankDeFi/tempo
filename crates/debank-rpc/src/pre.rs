@@ -62,7 +62,7 @@ where
                 } => {
                     let traces = inspector
                         .into_parity_builder()
-                        .into_localized_transaction_traces(tx_info.clone());
+                        .into_localized_transaction_traces(tx_info);
 
                     let logs: Vec<Log> = exec_logs
                         .into_iter()
@@ -126,7 +126,7 @@ where
 
         self.eth_api
             .spawn_with_state_at_block(BlockId::hash(parent_hash), move |eth_api, mut db| {
-                let this = PreApi::new(eth_api);
+                let this = Self::new(eth_api);
                 let mut results: Vec<PreResult> = Vec::with_capacity(transactions.len());
 
                 for (tx_index, tx) in transactions.into_iter().enumerate() {
