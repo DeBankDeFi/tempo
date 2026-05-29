@@ -1,7 +1,8 @@
 use crate::TempoInvalidTransaction;
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1};
+use alloy_consensus::{Typed2718, crypto::secp256k1};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_rlp::Encodable;
 use core::num::NonZeroU64;
 use revm::context::{
     Transaction, TxEnv,
@@ -11,10 +12,12 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
+use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
-    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
+    AASigned, TempoAddressExt, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
         Call, RecoveredTempoAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
+        envelope::KEY_AUTHORIZATION_MAX_RLP_LEN,
     },
 };
 
@@ -54,12 +57,6 @@ pub struct TempoBatchCallEnv {
     /// Transaction hash
     pub tx_hash: B256,
 
-    /// Expiring nonce hash for replay protection.
-    /// Computed as `keccak256(encode_for_signing || sender)`, which is invariant to fee
-    /// payer changes but unique per sender. Used instead of `tx_hash` for expiring nonce replay
-    /// protection to prevent replay via different fee payer signatures.
-    pub expiring_nonce_hash: Option<B256>,
-
     /// Optional access key ID override for gas estimation.
     /// When provided in eth_call/eth_estimateGas, enables spending limits simulation
     /// This is not used in actual transaction execution - the key_id is recovered from the signature.
@@ -83,6 +80,11 @@ pub struct TempoTxEnv {
 
     /// Whether the transaction is a system transaction.
     pub is_system_tx: bool,
+
+    /// Sender-scoped transaction identifier used for replay-sensitive features.
+    ///
+    /// Synthetic transaction environments used by tests and simulations may leave this unset.
+    pub unique_tx_identifier: Option<B256>,
 
     /// Optional fee payer specified for the transaction.
     ///
@@ -117,6 +119,19 @@ impl TempoTxEnv {
             .is_some_and(|aa| aa.subblock_transaction)
     }
 
+    /// Returns the sender-scoped transaction identifier.
+    ///
+    /// This is `keccak256(encode_for_signing || sender)` for every real transaction type. For
+    /// Tempo AA transactions, this matches the existing expiring nonce hash helper.
+    pub fn unique_tx_identifier(&self) -> Option<B256> {
+        self.unique_tx_identifier
+    }
+
+    /// Returns the replay-protected hash used to derive channel reserve IDs for `open`.
+    pub fn channel_open_context_hash(&self) -> Option<B256> {
+        self.unique_tx_identifier()
+    }
+
     /// Returns the first top-level call in the transaction.
     pub fn first_call(&self) -> Option<(&TxKind, &[u8])> {
         if let Some(aa) = self.tempo_tx_env.as_ref() {
@@ -146,6 +161,43 @@ impl TempoTxEnv {
             )))
         }
     }
+
+    /// Returns true if this transaction satisfies the TIP-1059 discounted-payment call allow-list.
+    ///
+    /// This checks only the transaction shape: no access list, no EIP-7702 authorizations, and
+    /// either one direct TIP-20 payment call or a non-empty AA batch where every call is an eligible
+    /// TIP-20 payment call. T6 activation and the gas-used cap are enforced by the caller.
+    ///
+    /// See: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#eligibility-rules>
+    pub fn is_discounted_payment(&self) -> bool {
+        if self
+            .access_list()
+            .is_some_and(|mut list| list.next().is_some())
+        {
+            return false;
+        }
+
+        if let Some(aa) = self.tempo_tx_env.as_ref() {
+            !aa.aa_calls.is_empty()
+                && aa.tempo_authorization_list.is_empty()
+                && aa
+                    .key_authorization
+                    .as_ref()
+                    .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                && aa
+                    .aa_calls
+                    .iter()
+                    .all(|call| is_discounted_tip20_call(&call.to, &call.input))
+        } else {
+            self.authorization_list_len() == 0
+                && is_discounted_tip20_call(&self.inner.kind, self.input())
+        }
+    }
+}
+
+fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
+    matches!(to, TxKind::Call(to) if to.is_tip20())
+        && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
 }
 
 impl From<TxEnv> for TempoTxEnv {
@@ -262,12 +314,6 @@ impl IntoTxEnv<Self> for TempoTxEnv {
     }
 }
 
-impl FromRecoveredTx<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
-    fn from_recovered_tx(tx: &EthereumTxEnvelope<TxEip4844>, sender: Address) -> Self {
-        TxEnv::from_recovered_tx(tx, sender).into()
-    }
-}
-
 impl FromRecoveredTx<AASigned> for TempoTxEnv {
     fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
         let tx = aa_signed.tx();
@@ -337,6 +383,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             },
             fee_token: *fee_token,
             is_system_tx: false,
+            unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
@@ -356,10 +403,6 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 key_authorization: key_authorization.clone(),
                 signature_hash: aa_signed.signature_hash(),
                 tx_hash: *aa_signed.hash(),
-                expiring_nonce_hash: aa_signed
-                    .tx()
-                    .is_expiring_nonce_tx()
-                    .then(|| aa_signed.expiring_nonce_hash(caller)),
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,
                 // can only be derived when given an entire block
@@ -376,24 +419,27 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
+                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 fee_payer: None,
                 tempo_tx_env: None, // Non-AA transaction
             },
-            TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
-            TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
-            TempoTxEnvelope::Eip7702(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
+            TempoTxEnvelope::Eip2930(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
+                ..Default::default()
+            },
+            TempoTxEnvelope::Eip1559(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
+                ..Default::default()
+            },
+            TempoTxEnvelope::Eip7702(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
+                ..Default::default()
+            },
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
         }
-    }
-}
-
-impl FromTxWithEncoded<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
-    fn from_encoded_tx(
-        tx: &EthereumTxEnvelope<TxEip4844>,
-        sender: Address,
-        _encoded: Bytes,
-    ) -> Self {
-        Self::from_recovered_tx(tx, sender)
     }
 }
 
@@ -411,17 +457,23 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
 
 #[cfg(test)]
 mod tests {
+    use alloy_consensus::{Signed, TxLegacy, transaction::TxHashRef};
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, keccak256};
+    use alloy_sol_types::SolCall;
     use core::num::NonZeroU64;
     use proptest::prelude::*;
     use revm::context::{Transaction, TxEnv, result::InvalidTransaction};
-    use tempo_primitives::transaction::{
-        Call, calc_gas_balance_spending,
-        tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
-        tt_signature::{PrimitiveSignature, TempoSignature},
-        tt_signed::AASigned,
-        validate_calls,
+    use tempo_contracts::precompiles::ITIP20;
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{
+            Call, calc_gas_balance_spending,
+            tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+            validate_calls,
+        },
     };
 
     use crate::{TempoInvalidTransaction, TempoTxEnv};
@@ -528,24 +580,64 @@ mod tests {
             AASigned::new_unhashed(tx, sig)
         };
 
-        // Expiring nonce tx: expiring_nonce_hash should be Some and match direct computation
+        // Expiring nonce txs and channel opens share the same encode_for_signing||sender hash.
         let expiring_signed = make_aa_signed(TEMPO_EXPIRING_NONCE_KEY);
         let expiring_env = TempoTxEnv::from_recovered_tx(&expiring_signed, caller);
-        let tempo_env = expiring_env.tempo_tx_env.as_ref().unwrap();
-        let expected_hash = expiring_signed.expiring_nonce_hash(caller);
+        let expected_identifier = expiring_signed.expiring_nonce_hash(caller);
         assert_eq!(
-            tempo_env.expiring_nonce_hash,
-            Some(expected_hash),
-            "expiring nonce tx must have expiring_nonce_hash set"
+            expiring_env.channel_open_context_hash(),
+            Some(expected_identifier),
+            "expiring nonce channel opens must use the sender-scoped transaction identifier"
         );
 
-        // Regular 2D nonce tx: expiring_nonce_hash should be None
+        // Regular 2D nonce txs still use the same encode_for_signing||sender construction.
         let regular_signed = make_aa_signed(U256::from(42));
         let regular_env = super::TempoTxEnv::from_recovered_tx(&regular_signed, caller);
-        let regular_tempo_env = regular_env.tempo_tx_env.as_ref().unwrap();
         assert_eq!(
-            regular_tempo_env.expiring_nonce_hash, None,
-            "regular 2D nonce tx must NOT have expiring_nonce_hash"
+            regular_env.channel_open_context_hash(),
+            Some(regular_signed.expiring_nonce_hash(caller)),
+            "non-expiring AA channel opens must use encode_for_signing||sender"
+        );
+    }
+
+    #[test]
+    fn test_legacy_channel_open_context_hash_uses_encoded_signing_payload_and_sender() {
+        let caller = Address::repeat_byte(0xAA);
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 7,
+            gas_price: 1,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::repeat_byte(0x42)),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let envelope =
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        let tx_hash = *envelope.tx_hash();
+        let TempoTxEnvelope::Legacy(signed) = &envelope else {
+            unreachable!()
+        };
+
+        let tx_env = super::TempoTxEnv::from_recovered_tx(&envelope, caller);
+        let signature_hash = signed.signature_hash();
+        assert_ne!(
+            signature_hash, tx_hash,
+            "legacy signature hash is the unsigned signing hash, not the signed tx hash"
+        );
+
+        let mut signature_hash_and_sender = [0u8; 52];
+        signature_hash_and_sender[..32].copy_from_slice(signature_hash.as_slice());
+        signature_hash_and_sender[32..].copy_from_slice(caller.as_slice());
+        let signature_hash_context = keccak256(signature_hash_and_sender);
+        let encoded_payload_context = envelope.unique_tx_identifier(caller);
+        assert_ne!(
+            encoded_payload_context, signature_hash_context,
+            "channel opens must use the encoded signing payload, not signature_hash||sender"
+        );
+        assert_eq!(
+            tx_env.channel_open_context_hash(),
+            Some(encoded_payload_context)
         );
     }
 
@@ -870,6 +962,103 @@ mod tests {
         };
         let calls: Vec<_> = empty_aa_tx.calls().collect();
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_is_discounted_payment() {
+        use revm::context::transaction::{AccessList, AccessListItem};
+
+        const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
+
+        let transfer = Bytes::from(
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(1),
+            }
+            .abi_encode(),
+        );
+        let burn = Bytes::from(
+            ITIP20::burnCall {
+                amount: U256::from(1),
+            }
+            .abi_encode(),
+        );
+        let approve = Bytes::from(
+            ITIP20::approveCall {
+                spender: Address::random(),
+                amount: U256::from(1),
+            }
+            .abi_encode(),
+        );
+        let mint = Bytes::from(
+            ITIP20::mintCall {
+                to: Address::random(),
+                amount: U256::from(1),
+            }
+            .abi_encode(),
+        );
+
+        let tx = |to, input: Bytes| super::TempoTxEnv {
+            inner: TxEnv {
+                kind: to,
+                data: input,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(tx(TxKind::Call(PAYMENT_TKN), transfer.clone()).is_discounted_payment());
+        assert!(tx(TxKind::Call(PAYMENT_TKN), burn).is_discounted_payment());
+        assert!(!tx(TxKind::Call(PAYMENT_TKN), approve.clone()).is_discounted_payment());
+        assert!(!tx(TxKind::Call(PAYMENT_TKN), mint).is_discounted_payment());
+        assert!(!tx(TxKind::Call(Address::random()), transfer.clone()).is_discounted_payment());
+        assert!(!tx(TxKind::Create, transfer.clone()).is_discounted_payment());
+
+        let mut access_list_tx = tx(TxKind::Call(PAYMENT_TKN), transfer.clone());
+        access_list_tx.inner.access_list = AccessList(vec![AccessListItem {
+            address: Address::random(),
+            storage_keys: vec![],
+        }]);
+        assert!(!access_list_tx.is_discounted_payment());
+
+        let aa_tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![Call {
+                    to: TxKind::Call(PAYMENT_TKN),
+                    value: U256::ZERO,
+                    input: transfer.clone(),
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(aa_tx.is_discounted_payment());
+
+        let mixed_aa_tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![
+                    Call {
+                        to: TxKind::Call(PAYMENT_TKN),
+                        value: U256::ZERO,
+                        input: transfer,
+                    },
+                    Call {
+                        to: TxKind::Call(PAYMENT_TKN),
+                        value: U256::ZERO,
+                        input: approve,
+                    },
+                ],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(!mixed_aa_tx.is_discounted_payment());
+
+        let empty_aa_tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv::default())),
+            ..Default::default()
+        };
+        assert!(!empty_aa_tx.is_discounted_payment());
     }
 
     /// Strategy for random U256 values.

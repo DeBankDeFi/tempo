@@ -81,27 +81,6 @@ jobs:
             type=sha,prefix=sha-
             type=ref,event=pr
 
-      - name: Docker metadata for tempo-bench
-        id: meta-tempo-bench
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
-        with:
-          images: |
-            ${{ env.REGISTRY }}/tempo-bench
-            docker.io/tempoxyz/tempo-bench
-          bake-target: tempo-bench
-          labels: ${{ steps.docker-labels.outputs.value }}
-          tags: |
-            type=schedule,pattern=nightly
-            type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=edge,branch=main
-            type=sha,prefix=sha-
-            type=ref,event=pr
-
       - name: Docker metadata for tempo-sidecar
         id: meta-tempo-sidecar
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
@@ -166,7 +145,6 @@ jobs:
           files: |
             docker-bake.hcl
             ${{ steps.meta-tempo.outputs.bake-file }}
-            ${{ steps.meta-tempo-bench.outputs.bake-file }}
             ${{ steps.meta-tempo-sidecar.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
           targets: default
@@ -187,7 +165,6 @@ jobs:
           set -euo pipefail
           images=(
             "${{ steps.meta-tempo.outputs.tags }}"
-            "${{ steps.meta-tempo-bench.outputs.tags }}"
             "${{ steps.meta-tempo-sidecar.outputs.tags }}"
             "${{ steps.meta-tempo-xtask.outputs.tags }}"
           )
@@ -240,6 +217,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          DAY_OF_WEEK="$(date -u +%u)"
+          if [ "$DAY_OF_WEEK" = "5" ]; then
+            INVARIANT_TIMEOUT="172800"
+          else
+            INVARIANT_TIMEOUT="18000"
+          fi
+
           echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
           echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
 
@@ -254,6 +238,7 @@ jobs:
               \"data\": {
                 \"tag\": \"nightly\",
                 \"sha\": \"${COMMIT_SHA}\",
-                \"branch\": \"${BRANCH_NAME}\"
+                \"branch\": \"${BRANCH_NAME}\",
+                \"invariant_timeout\": \"${INVARIANT_TIMEOUT}\"
               }
             }"
