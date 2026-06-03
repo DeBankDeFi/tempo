@@ -28,6 +28,8 @@ BLOCKS = {
     "B9_post_t3_webauthn":  "0x11a6002",  # 18,505,730 — address_registry + AA webAuthn
     "B10_post_t3_aa":  "0x115e000",   # 18,210,816 — AA tx
     "B11_post_t3_highrate":  "0x12b1280",  # 19,600,000 — 5 Legacy txs
+    "B12_post_t4_aa":  "0x15752a0",   # 22,500,000 — post-T4 AA tx + consensus_context
+    "B13_post_t4_nearhead":  "0x16387a0",  # 23,300,000 — post-T4 AA tx near-head
 }
 
 # 计数

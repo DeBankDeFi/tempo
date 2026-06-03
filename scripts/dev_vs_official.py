@@ -20,10 +20,11 @@ OFFICIAL = "https://rpc.tempo.xyz"
 
 # 块矩阵：分 pre-T3 / post-T3 / near-head
 PRE_T3 = list(range(10_080_000, 10_080_000 + 30 * 700, 700))     # 30 个 pre-T3 块，间隔 700
-POST_T3 = list(range(17_100_000, 17_100_000 + 25 * 110_000, 110_000))  # 25 个 post-T3 跨越 17M-19.8M
-NEAR_HEAD = [19_920_000, 19_925_000, 19_930_000, 19_935_000, 19_940_000]  # 5 个 head 邻近
+POST_T3 = list(range(17_100_000, 17_100_000 + 20 * 110_000, 110_000))  # 20 个 post-T3 跨越 17M-19M
+POST_T4 = list(range(20_000_000, 20_000_000 + 15 * 220_000, 220_000))  # 15 个 post-T4 跨越 20M-23M
+NEAR_HEAD = [23_300_000, 23_310_000, 23_320_000, 23_324_000, 23_325_000]  # 5 个 head 邻近 (post-T4)
 
-ALL_BLOCKS = PRE_T3 + POST_T3 + NEAR_HEAD
+ALL_BLOCKS = PRE_T3 + POST_T3 + POST_T4 + NEAR_HEAD
 
 
 def call_rpc(url, method, params, timeout=20, retries=2):

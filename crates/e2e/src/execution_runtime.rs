@@ -12,7 +12,7 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
+use alloy_evm::{EvmFactory as _, revm::context::JournalTr};
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, Keccak256, U256};
 use commonware_codec::Encode;
@@ -25,7 +25,7 @@ use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt, future::BoxFuture};
 use reth_chainspec::EthChainSpec;
-use reth_db::mdbx::{DatabaseEnv, GIGABYTE};
+use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
     evm::{
         primitives::EvmEnv,
@@ -40,7 +40,7 @@ use reth_ethereum::{
 };
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
-    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs, StorageArgs},
+    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs},
     exit::NodeExitFuture,
 };
 use reth_rpc_builder::RpcModuleSelection;
@@ -75,7 +75,6 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 pub struct Builder {
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
-    t4_time: Option<u64>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
 }
 
@@ -84,7 +83,6 @@ impl Builder {
         Self {
             epoch_length: None,
             initial_dkg_outcome: None,
-            t4_time: None,
             validators: None,
         }
     }
@@ -110,15 +108,10 @@ impl Builder {
         }
     }
 
-    pub fn with_t4_time(self, t4_time: Option<u64>) -> Self {
-        Self { t4_time, ..self }
-    }
-
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             epoch_length,
             initial_dkg_outcome,
-            t4_time,
             validators,
         } = self;
 
@@ -142,14 +135,6 @@ impl Builder {
             .extra_fields
             .insert_value("epochLength".to_string(), epoch_length)
             .unwrap();
-
-        if let Some(t4_time) = t4_time {
-            genesis
-                .config
-                .extra_fields
-                .insert_value("t4Time".to_string(), t4_time)
-                .unwrap();
-        }
 
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
 
@@ -843,12 +828,14 @@ pub fn genesis() -> Genesis {
     serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap()
 }
 
-/// Returns MDBX DB args sized for tests (1 GB max instead of 8 TB).
+/// Returns MDBX DB args sized for tests (64 MB max with 4 MB growth step).
 ///
-/// The default 8 TB geometry exhausts process virtual-address space when
-/// many databases are open concurrently across parallel test threads.
+/// The default 8 TB geometry with 4 GB growth step both exhausts process
+/// virtual-address space when many databases are open concurrently across
+/// parallel test threads, and pre-allocates multi-GB files on disk that
+/// can fill the CI runner's disk.
 pub fn test_db_args() -> reth_db::mdbx::DatabaseArguments {
-    reth_db::mdbx::DatabaseArguments::default().with_geometry_max_size(Some(GIGABYTE))
+    reth_db::mdbx::DatabaseArguments::test()
 }
 
 /// Launches a tempo execution node.
@@ -891,7 +878,6 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             interval: Duration::from_millis(100),
             ..Default::default()
         })
-        .with_storage(StorageArgs { v2: false })
         .apply(|mut c| {
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();
