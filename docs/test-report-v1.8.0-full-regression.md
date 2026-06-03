@@ -25,8 +25,7 @@ B1–B11 沿用 v1.7.0（genesis/empty/pre-T3/post-T3/revert/create/AA/webAuthn/
 |---|--------|------|
 | **一** | trace_debankBlock 13 块 × 13 section | **2246 PASS / 0 FAIL / 2 N/A** |
 | **二** | post-T4 consensus_context 专项 | **PASS**（标准 header 有 cc，blockfile 不含 cc，符合设计） |
-| **三** | eth_multiCall | **PASS**（0xeeee 模拟 + 错误码 + 空请求 + 5000 批量） |
-| **四** | pre_traceMany | **PASS**（基础 trace 正常） |
+| **三+四** | eth_multiCall + pre_traceMany（`multicall_pre_test.py`） | **37 PASS / 0 FAIL**（真实 TIP-20 USDC.e + 0xeeee native + 错误码 -40001/-40014/-40015 + 参数全 + 边界 + pre revert/gas不足/多笔/字段） |
 | **五** | writer vs 官方 byte-identical（70 块） | **1057 PASS / 0 FAIL** |
 | **六** | 完整 pipeline 一致性 | **PASS**（leafage lag=0 + 一致 + etl 0 panic；consistency 多副本受单节点限制） |
 | **七** | 压力测试 | **PASS**（multiCall 5000 笔全 ok，容器健康，0 panic） |
@@ -59,20 +58,26 @@ B1–B11 沿用 v1.7.0（genesis/empty/pre-T3/post-T3/revert/create/AA/webAuthn/
 - **2.2** 同块 `trace_debankBlock` 的 blockfile header **不含** consensus_context（设计：blockfile 用 `alloy_rpc_types_eth::Header`，消费方不需要共识元数据）✓
 - **2.3** B12/B13 跑完整 13 section，0 FAIL ✓
 
-### §三 eth_multiCall
+### §三+四 eth_multiCall + pre_traceMany（37 PASS / 0 FAIL，`scripts/multicall_pre_test.py`）
 
-| 项 | 结果 |
-|---|---|
-| 0xeeee decimals (0x313ce567) | code=0, result=`0x..12` = **18** ✓ |
-| 0xeeee totalSupply (0x18160ddd) | code=0, result=`0x..01` = **1** ✓ |
-| 0xeeee 未知 selector | code=**-40001**（NativeMethodNotFound）✓ |
-| 空请求 [] | results=[], success=true ✓ |
-| 5000 笔批量 | 5000/5000 ok, 0.03s ✓ |
+> **诚实修正**：本报告初版此处仅 sanity 约 6 项（dev 自比 + 0xeeee），把 sanity 当 PASS 写了。后补全为完整 37 项自动化覆盖。
 
-### §四 pre_traceMany
+**§三 multiCall**：
+- 真实 TIP-20（USDC.e `0x20c0..b9537d`，6 decimals）：decimals / symbol / totalSupply / balanceOf ✓
+- 0xeeee native：decimals=18 / totalSupply=1 / balanceOf；未知 selector **-40001**；**gasUsed=0**（native 不执行真实 EVM）
+- 批量 3 笔；fast_fail 第1笔 **-40014** / 第2笔 **-40015**
+- 历史 blockNumber / blockHash / 不存在块 **-32001** / useParallel / disableCache
+- state_overrides（注入 `0x602a..f3` → result=42）/ block_overrides / per-call from
+- 错误码 -40001 / -40014（注入 revert） / 无限循环
+- 字段类型（SingleCallResult + MultiCallStats 全字段）
+- 边界：空请求 / block 0/1 / 混合成功失败（success=false）
 
-- 基础 0x0 call：`trace=[...]`, gasUsed=271000, error=null ✓
-- `transactionHash` 为 `B256::random()`（pre.rs:140，设计，对比时排除）
+**§四 pre_traceMany**：基础 call trace / TIP-20 view trace / revert(error.code=**1002**) / gas不足(**1000/1001**) / 多笔顺序 state 累积 / 历史 post-T4 block / 空列表 / PreResult + Parity trace 字段完整。`transactionHash` 为 `B256::random()`（pre.rs:140，设计）。
+
+**测试中发现**（之前 sanity 漏掉）：
+1. **0xeeee native 模拟 `gasUsed=0`**（不执行真实 EVM；真实 USDC.e decimals 调用 gasUsed=271170）——设计行为，文档应写明
+2. **无限循环 + per-call gas 设过低 → 整请求 `-32000 "intrinsic gas too low"`**（Tempo intrinsic gas 高于标准 21000；skill 文档的 -40013 预期不准）
+3. TIP-20 合约稀少：Tempo 多是 AA tx（to=ZERO，真实调用在 calls 数组），扫 tx.to 找不到几个合约
 
 ### §五 writer vs 官方 RPC byte-identical（1057 PASS / 0 FAIL）
 
